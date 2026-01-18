@@ -287,11 +287,19 @@ def events_to_voxel_grid(
     p = events.p
     if polarity_channels:
         # Channel 0: positive (ON), Channel 1: negative (OFF)
-        # Handle both (0, 1) and (-1, 1) polarity conventions
-        if p.min() < 0:
-            c_idx = ((p + 1) // 2).astype(np.int32)  # -1 -> 0, +1 -> 1
+        # Handle various polarity conventions: (0,1), (-1,1), (1,2), etc.
+        p_min, p_max = p.min(), p.max()
+        if p_min < 0:
+            # Convention: -1/+1 -> map to 0/1
+            c_idx = ((p + 1) // 2).astype(np.int32)
+        elif p_min == 0 and p_max <= 1:
+            # Convention: 0/1 -> use directly
+            c_idx = p.astype(np.int32)
         else:
-            c_idx = p.astype(np.int32)  # 0 -> 0, 1 -> 1
+            # Convention: 1/2 or other -> normalize to 0/1
+            c_idx = (p - p_min).astype(np.int32)
+        # Ensure indices are valid (0 or 1)
+        c_idx = np.clip(c_idx, 0, 1)
     else:
         c_idx = np.zeros_like(x)
     
