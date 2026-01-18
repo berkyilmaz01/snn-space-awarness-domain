@@ -114,6 +114,16 @@ data:
   normalize: true           # Normalize event counts
   shuffle_train: true       # Shuffle training data
   shuffle_val: false        # Shuffle validation data
+  train_ratio: 1.0          # Use ALL data for training (STDP is unsupervised)
+  
+  # Data augmentation (safe options - no cropping to preserve edge satellites)
+  augmentation:
+    enabled: true
+    flip_horizontal: true   # Safe: satellites can appear on either side
+    flip_polarity: true     # Safe: doesn't change spatial location
+    drop_rate: 0.1          # Safe: randomly drop 10% of events
+    noise_rate: 0.05        # Safe: add 5% noise events
+    # random_crop: null     # DISABLED: would cut off edge satellites
 
 # -----------------------------------------------------------------------------
 # Model Architecture

@@ -290,6 +290,10 @@ class DataParams:
     normalize: bool = True       # Normalize event counts
     shuffle_train: bool = True   # Shuffle training data
     shuffle_val: bool = False    # Shuffle validation data
+    train_ratio: float = 1.0     # Train/val split ratio (1.0 = use all for training)
+    
+    # Augmentation (safe options for satellites)
+    augmentation: Optional[Dict[str, Any]] = None  # Augmentation config dict
 
 
 @dataclass
@@ -1431,6 +1435,22 @@ class STDPTrainer:
             # Try to load real dataset first
             if data_cfg.dataset.lower() == "ebssa":
                 try:
+                    # Setup augmentation if configured
+                    from spikeseg.data import EventAugmentation
+                    aug = None
+                    aug_cfg = data_cfg.augmentation
+                    if aug_cfg and aug_cfg.get('enabled', False):
+                        aug = EventAugmentation(
+                            flip_horizontal=aug_cfg.get('flip_horizontal', False),
+                            flip_polarity=aug_cfg.get('flip_polarity', False),
+                            drop_rate=aug_cfg.get('drop_rate', 0.0),
+                            noise_rate=aug_cfg.get('noise_rate', 0.0),
+                            random_crop=aug_cfg.get('random_crop', None)
+                        )
+                        self.logger.info(f"Augmentation enabled: flip_h={aug_cfg.get('flip_horizontal')}, "
+                                        f"flip_p={aug_cfg.get('flip_polarity')}, "
+                                        f"drop={aug_cfg.get('drop_rate')}, noise={aug_cfg.get('noise_rate')}")
+                    
                     train_dataset = EBSSADataset(
                         root=data_cfg.data_root,
                         split="train",
@@ -1440,7 +1460,9 @@ class STDPTrainer:
                         width=data_cfg.input_width,
                         polarity_channels=(data_cfg.input_channels == 2),
                         normalize=data_cfg.normalize,
-                        include_unlabelled=data_cfg.include_unlabelled
+                        include_unlabelled=data_cfg.include_unlabelled,
+                        train_ratio=data_cfg.train_ratio,
+                        augmentation=aug
                     )
                     val_dataset = EBSSADataset(
                         root=data_cfg.data_root,
@@ -1451,7 +1473,9 @@ class STDPTrainer:
                         width=data_cfg.input_width,
                         polarity_channels=(data_cfg.input_channels == 2),
                         normalize=data_cfg.normalize,
-                        include_unlabelled=False  # Val uses only labelled
+                        include_unlabelled=False,  # Val uses only labelled
+                        train_ratio=data_cfg.train_ratio,
+                        augmentation=None  # No augmentation for validation
                     )
                     self.logger.info(f"Loaded EBSSA dataset: {len(train_dataset)} train, {len(val_dataset)} val")
                 except Exception as e:
