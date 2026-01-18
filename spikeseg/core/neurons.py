@@ -168,7 +168,8 @@ class BaseNeuron(nn.Module):
         self,
         input_current: torch.Tensor,
         membrane: torch.Tensor,
-        has_fired: Optional[torch.Tensor] = None
+        has_fired: Optional[torch.Tensor] = None,
+        dynamic_threshold: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Process one timestep.
@@ -180,6 +181,10 @@ class BaseNeuron(nn.Module):
             has_fired: Optional mask of neurons that have already fired.
                       If provided, these neurons are prevented from firing again.
                       (Kheradpisheh 2018: "neurons are not allowed to fire more than once")
+            dynamic_threshold: Optional per-channel thresholds for homeostasis.
+                              Shape: (channels,) - will be broadcast to membrane shape.
+                              If provided, overrides self.threshold for spike generation.
+                              (Diehl & Cook 2015, Lee et al. 2018: adaptive thresholds)
 
         Returns:
             Tuple of (spikes, new_membrane, pre_reset_membrane):
@@ -271,7 +276,8 @@ class IFNeuron(BaseNeuron):
         self,
         input_current: torch.Tensor,
         membrane: torch.Tensor,
-        has_fired: Optional[torch.Tensor] = None
+        has_fired: Optional[torch.Tensor] = None,
+        dynamic_threshold: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Process one timestep of IF neuron dynamics.
@@ -282,6 +288,9 @@ class IFNeuron(BaseNeuron):
             has_fired: Optional mask of neurons that have already fired.
                       If provided, these neurons are prevented from firing again.
                       (Kheradpisheh 2018: "neurons are not allowed to fire more than once")
+            dynamic_threshold: Optional per-channel thresholds for homeostasis.
+                              Shape: (channels,) - will be broadcast to membrane shape.
+                              If provided, overrides self.threshold for spike generation.
 
         Returns:
             Tuple of (spikes, new_membrane, pre_reset_membrane):
@@ -302,7 +311,13 @@ class IFNeuron(BaseNeuron):
         pre_reset_membrane = membrane.clone()
 
         # Step 2: Check threshold and generate spikes
-        spikes = spike_function(membrane, self.threshold.item())
+        # Use dynamic threshold if provided (for adaptive homeostasis)
+        if dynamic_threshold is not None:
+            # Broadcast (C,) to (B, C, H, W) by reshaping to (1, C, 1, 1)
+            thresh = dynamic_threshold.view(1, -1, 1, 1)
+            spikes = (membrane >= thresh).float()
+        else:
+            spikes = spike_function(membrane, self.threshold.item())
 
         # Step 2b: Fire-once constraint (Kheradpisheh 2018)
         # "neurons are not allowed to fire more than once"
@@ -442,7 +457,8 @@ class LIFNeuron(BaseNeuron):
         self,
         input_current: torch.Tensor,
         membrane: torch.Tensor,
-        has_fired: Optional[torch.Tensor] = None
+        has_fired: Optional[torch.Tensor] = None,
+        dynamic_threshold: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Process one timestep of LIF neuron dynamics.
@@ -453,6 +469,10 @@ class LIFNeuron(BaseNeuron):
             has_fired: Optional mask of neurons that have already fired.
                       If provided, these neurons are prevented from firing again.
                       (Kheradpisheh 2018: "neurons are not allowed to fire more than once")
+            dynamic_threshold: Optional per-channel thresholds for homeostasis.
+                              Shape: (channels,) - will be broadcast to membrane shape.
+                              If provided, overrides self.threshold for spike generation.
+                              (Diehl & Cook 2015, Lee et al. 2018: adaptive thresholds)
 
         Returns:
             Tuple of (spikes, new_membrane, pre_reset_membrane):
@@ -483,7 +503,13 @@ class LIFNeuron(BaseNeuron):
         pre_reset_membrane = membrane.clone()
 
         # Step 3: Check threshold and generate spikes
-        spikes = spike_function(membrane, self.threshold.item())
+        # Use dynamic threshold if provided (for adaptive homeostasis)
+        if dynamic_threshold is not None:
+            # Broadcast (C,) to (B, C, H, W) by reshaping to (1, C, 1, 1)
+            thresh = dynamic_threshold.view(1, -1, 1, 1)
+            spikes = (membrane >= thresh).float()
+        else:
+            spikes = spike_function(membrane, self.threshold.item())
 
         # Step 3b: Fire-once constraint (Kheradpisheh 2018)
         # "neurons are not allowed to fire more than once"

@@ -1854,8 +1854,18 @@ class STDPTrainer:
         }
         
         with torch.no_grad():
-            # Forward pass through encoder
-            enc_output = self.model.encode(x)
+            # ============================================================
+            # BUILD ADAPTIVE THRESHOLDS FOR FORWARD PASS
+            # Paper (Diehl & Cook 2015, Lee et al. 2018):
+            # "On spike: increase threshold of entire feature map"
+            # This prevents any single kernel from dominating the learning
+            # ============================================================
+            layer_thresholds = {}
+            for lname, threshold_mgr in self.threshold_managers.items():
+                layer_thresholds[lname] = threshold_mgr.get_threshold()
+            
+            # Forward pass through encoder WITH adaptive thresholds
+            enc_output = self.model.encode(x, layer_thresholds=layer_thresholds)
             
             # Get layer spikes
             if hasattr(enc_output, 'layer_spikes') and layer_name in enc_output.layer_spikes:
@@ -1873,6 +1883,7 @@ class STDPTrainer:
             # ADAPTIVE THRESHOLD UPDATE (Homeostasis)
             # Paper: "In the event of a post-neuronal spike in a convolutional
             # feature map, we uniformly increase the firing threshold"
+            # Now these updated thresholds will be USED in the next forward pass!
             # ============================================================
             if layer_name in self.threshold_managers:
                 threshold_mgr = self.threshold_managers[layer_name]

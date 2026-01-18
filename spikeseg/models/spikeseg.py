@@ -42,7 +42,7 @@ Example:
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -269,17 +269,30 @@ class SpikeSEG(nn.Module):
         if self._decoder is not None:
             self._decoder.reset_state()
     
-    def encode(self, x: torch.Tensor) -> EncoderOutput:
+    def encode(
+        self, 
+        x: torch.Tensor,
+        layer_thresholds: Optional[Dict[str, torch.Tensor]] = None
+    ) -> EncoderOutput:
         """
         Forward pass through encoder only.
         
         Args:
             x: Input spikes, shape (batch, channels, H, W).
+            layer_thresholds: Optional dict mapping layer names ('conv1', 'conv2', 'conv3')
+                             to per-channel threshold tensors (shape: (out_channels,)).
+                             Used for adaptive homeostasis during STDP training.
+                             
+                             Example:
+                                 layer_thresholds = {
+                                     'conv2': torch.tensor([10.1, 10.0, 9.8, ...]),  # (36,)
+                                     'conv3': torch.tensor([10.5, 10.2]),  # (n_classes,)
+                                 }
         
         Returns:
             EncoderOutput with classification spikes and pooling indices.
         """
-        return self.encoder(x)
+        return self.encoder(x, layer_thresholds=layer_thresholds)
     
     def decode(self, encoder_output: EncoderOutput) -> torch.Tensor:
         """
