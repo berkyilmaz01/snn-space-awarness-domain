@@ -69,8 +69,8 @@ from torch.utils.data import DataLoader, Dataset
 if TYPE_CHECKING:
     from spikeseg.learning.stdp import STDPLearner
 
-# Add project root to path
-project_root = Path(__file__).resolve().parent.parent.parent
+# Add project root to path (scripts/train.py -> scripts -> project_root)
+project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
