@@ -1152,16 +1152,22 @@ class EBSSADataset(EventDataset):
             return events
         
         # Calculate window size based on overlap
-        # With overlap=0.5 and 10 windows, we need windows that overlap 50%
-        # Window size = duration / (1 + (n_windows - 1) * (1 - overlap))
-        effective_windows = 1 + (self.windows_per_recording - 1) * (1 - self.window_overlap)
-        window_size = duration / effective_windows
+        # With overlap=0.5 and N windows:
+        #   - step_size = window_size * (1 - overlap)
+        #   - Total span = (N-1) * step_size + window_size = duration
+        #   - Solving: window_size = duration / (1 + (N-1) * (1 - overlap))
+        effective_windows = 1.0 + (self.windows_per_recording - 1) * (1.0 - self.window_overlap)
+        window_size = float(duration) / effective_windows
         
-        # Calculate window start time
-        # Step size = window_size * (1 - overlap)
-        step_size = window_size * (1 - self.window_overlap)
-        window_start = t_min + window_idx * step_size
+        # Step size between consecutive windows
+        step_size = window_size * (1.0 - self.window_overlap)
+        
+        # Calculate window boundaries
+        window_start = float(t_min) + window_idx * step_size
         window_end = window_start + window_size
+        
+        # Clamp to valid range (important for last window due to float precision)
+        window_end = min(window_end, float(t_max) + 1)  # +1 to include t_max
         
         # Extract events in this window
         mask = (events.t >= window_start) & (events.t < window_end)
@@ -1178,13 +1184,14 @@ class EBSSADataset(EventDataset):
             )
         
         # Shift timestamps to start at 0 for this window
-        t_extracted = events.t[mask] - window_start
+        # Convert window_start to int64 to preserve precision for microsecond timestamps
+        t_extracted = events.t[mask] - np.int64(window_start)
         
         return EventData(
             x=events.x[mask].copy(),
             y=events.y[mask].copy(),
             p=events.p[mask].copy(),
-            t=t_extracted.astype(np.int64),
+            t=t_extracted.copy(),  # Already int64 from subtraction
             height=events.height,
             width=events.width
         )
