@@ -116,6 +116,11 @@ data:
   shuffle_val: false        # Shuffle validation data
   train_ratio: 1.0          # Use ALL data for training (STDP is unsupervised)
   
+  # Sliding window sampling - extract multiple samples per recording
+  # 84 recordings × 50 windows = 4200 training samples
+  windows_per_recording: 50  # Number of temporal windows per recording
+  window_overlap: 0.5        # 50% overlap between consecutive windows
+  
   # Data augmentation (safe options - no cropping to preserve edge satellites)
   augmentation:
     enabled: true

@@ -292,6 +292,10 @@ class DataParams:
     shuffle_val: bool = False    # Shuffle validation data
     train_ratio: float = 1.0     # Train/val split ratio (1.0 = use all for training)
     
+    # Sliding window sampling - extract multiple samples per recording
+    windows_per_recording: int = 1   # Number of windows per recording (1=original behavior)
+    window_overlap: float = 0.5      # Overlap between consecutive windows (0.0-0.9)
+    
     # Augmentation (safe options for satellites)
     augmentation: Optional[Dict[str, Any]] = None  # Augmentation config dict
 
@@ -1451,6 +1455,10 @@ class STDPTrainer:
                                         f"flip_p={aug_cfg.get('flip_polarity')}, "
                                         f"drop={aug_cfg.get('drop_rate')}, noise={aug_cfg.get('noise_rate')}")
                     
+                    # Get sliding window parameters
+                    windows_per_recording = getattr(data_cfg, 'windows_per_recording', 1)
+                    window_overlap = getattr(data_cfg, 'window_overlap', 0.5)
+                    
                     train_dataset = EBSSADataset(
                         root=data_cfg.data_root,
                         split="train",
@@ -1462,7 +1470,9 @@ class STDPTrainer:
                         normalize=data_cfg.normalize,
                         include_unlabelled=data_cfg.include_unlabelled,
                         train_ratio=data_cfg.train_ratio,
-                        augmentation=aug
+                        augmentation=aug,
+                        windows_per_recording=windows_per_recording,
+                        window_overlap=window_overlap
                     )
                     val_dataset = EBSSADataset(
                         root=data_cfg.data_root,
@@ -1475,9 +1485,12 @@ class STDPTrainer:
                         normalize=data_cfg.normalize,
                         include_unlabelled=False,  # Val uses only labelled
                         train_ratio=data_cfg.train_ratio,
-                        augmentation=None  # No augmentation for validation
+                        augmentation=None,  # No augmentation for validation
+                        windows_per_recording=1,  # No sliding window for validation
+                        window_overlap=0.0
                     )
-                    self.logger.info(f"Loaded EBSSA dataset: {len(train_dataset)} train, {len(val_dataset)} val")
+                    n_recordings = len(train_dataset.recordings)
+                    self.logger.info(f"Loaded EBSSA dataset: {n_recordings} recordings × {windows_per_recording} windows = {len(train_dataset)} train samples, {len(val_dataset)} val")
                 except Exception as e:
                     self.logger.warning(f"Failed to load EBSSA dataset: {e}")
                     self.logger.info("Falling back to synthetic dataset for testing")

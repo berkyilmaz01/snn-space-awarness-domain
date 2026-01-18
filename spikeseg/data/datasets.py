@@ -910,7 +910,9 @@ class EBSSADataset(EventDataset):
         train_ratio: float = 0.8,
         transform: Optional[Callable] = None,
         augmentation: Optional[EventAugmentation] = None,
-        max_samples: Optional[int] = None
+        max_samples: Optional[int] = None,
+        windows_per_recording: int = 1,
+        window_overlap: float = 0.5
     ):
         """
         Initialize EBSSA dataset.
@@ -930,6 +932,8 @@ class EBSSADataset(EventDataset):
             transform: Optional transform.
             augmentation: Optional augmentation.
             max_samples: Maximum samples to load (for debugging).
+            windows_per_recording: Number of sliding windows per recording (1=original behavior).
+            window_overlap: Overlap between consecutive windows (0.0-0.9).
         """
         # Set default resolution based on sensor
         if sensor in self.SENSORS:
@@ -954,6 +958,8 @@ class EBSSADataset(EventDataset):
         self.use_labels = use_labels
         self.include_unlabelled = include_unlabelled
         self.train_ratio = train_ratio
+        self.windows_per_recording = max(1, windows_per_recording)
+        self.window_overlap = min(0.9, max(0.0, window_overlap))
         
         # Default sensor resolution for loading
         self._sensor_height = default_h
@@ -967,7 +973,12 @@ class EBSSADataset(EventDataset):
         
         # Limit samples
         if max_samples is not None:
-            self.recordings = self.recordings[:max_samples]
+            # Limit recordings, not windows
+            max_recordings = max(1, max_samples // self.windows_per_recording)
+            self.recordings = self.recordings[:max_recordings]
+        
+        # Build sample index mapping: sample_idx -> (recording_idx, window_idx)
+        self._build_sample_index()
     
     def _find_recordings(self) -> List[Dict[str, Any]]:
         """Find all recording files."""
@@ -1047,16 +1058,34 @@ class EBSSADataset(EventDataset):
         elif self.split in ["val", "test"]:
             self.recordings = self.recordings[n_train:]
     
+    def _build_sample_index(self) -> None:
+        """Build mapping from sample index to (recording_idx, window_idx).
+        
+        With sliding windows, each recording produces multiple samples.
+        This maps the flat sample index to the specific recording and window.
+        """
+        self._sample_map: List[Tuple[int, int]] = []  # (recording_idx, window_idx)
+        
+        for rec_idx in range(len(self.recordings)):
+            for win_idx in range(self.windows_per_recording):
+                self._sample_map.append((rec_idx, win_idx))
+    
     def __len__(self) -> int:
-        return len(self.recordings)
+        return len(self._sample_map)
     
     def _load_sample(self, index: int) -> Tuple[EventData, Any]:
-        """Load events and labels for a recording."""
-        rec = self.recordings[index]
+        """Load events and labels for a recording with sliding window.
         
-        # Load events with error handling for different .mat formats
+        Uses the sample index to determine which recording and which
+        time window to extract events from.
+        """
+        # Map sample index to recording and window
+        rec_idx, win_idx = self._sample_map[index]
+        rec = self.recordings[rec_idx]
+        
+        # Load all events with error handling for different .mat formats
         try:
-            events = load_events_mat(
+            all_events = load_events_mat(
                 rec['event_path'],
                 height=self._sensor_height,
                 width=self._sensor_width
@@ -1064,7 +1093,7 @@ class EBSSADataset(EventDataset):
         except (IndexError, KeyError, OSError, ValueError) as e:
             # File format not supported - create empty events
             warnings.warn(f"Failed to load {rec['name']}: {e}. Using empty events.")
-            events = EventData(
+            all_events = EventData(
                 x=np.array([], dtype=np.int32),
                 y=np.array([], dtype=np.int32),
                 p=np.array([], dtype=np.int8),
@@ -1072,6 +1101,9 @@ class EBSSADataset(EventDataset):
                 height=self._sensor_height,
                 width=self._sensor_width
             )
+        
+        # Apply sliding window to extract subset of events
+        events = self._extract_window(all_events, win_idx)
         
         # Load labels
         label = None
@@ -1091,6 +1123,71 @@ class EBSSADataset(EventDataset):
             label = self._labels_to_mask(label, events)
         
         return events, label
+    
+    def _extract_window(self, events: EventData, window_idx: int) -> EventData:
+        """Extract a time window from the full event stream.
+        
+        Divides the recording into overlapping windows and returns the
+        events that fall within the specified window.
+        
+        Args:
+            events: Full event stream from recording
+            window_idx: Which window to extract (0 to windows_per_recording-1)
+            
+        Returns:
+            EventData containing only events in the specified time window
+        """
+        if len(events.t) == 0:
+            return events
+        
+        # If only 1 window, return all events
+        if self.windows_per_recording == 1:
+            return events
+        
+        t_min = events.t.min()
+        t_max = events.t.max()
+        duration = t_max - t_min
+        
+        if duration == 0:
+            return events
+        
+        # Calculate window size based on overlap
+        # With overlap=0.5 and 10 windows, we need windows that overlap 50%
+        # Window size = duration / (1 + (n_windows - 1) * (1 - overlap))
+        effective_windows = 1 + (self.windows_per_recording - 1) * (1 - self.window_overlap)
+        window_size = duration / effective_windows
+        
+        # Calculate window start time
+        # Step size = window_size * (1 - overlap)
+        step_size = window_size * (1 - self.window_overlap)
+        window_start = t_min + window_idx * step_size
+        window_end = window_start + window_size
+        
+        # Extract events in this window
+        mask = (events.t >= window_start) & (events.t < window_end)
+        
+        if not np.any(mask):
+            # No events in window - return empty
+            return EventData(
+                x=np.array([], dtype=np.int32),
+                y=np.array([], dtype=np.int32),
+                p=np.array([], dtype=np.int8),
+                t=np.array([], dtype=np.int64),
+                height=events.height,
+                width=events.width
+            )
+        
+        # Shift timestamps to start at 0 for this window
+        t_extracted = events.t[mask] - window_start
+        
+        return EventData(
+            x=events.x[mask].copy(),
+            y=events.y[mask].copy(),
+            p=events.p[mask].copy(),
+            t=t_extracted.astype(np.int64),
+            height=events.height,
+            width=events.width
+        )
     
     def _labels_to_mask(
         self, 
