@@ -2063,14 +2063,23 @@ class STDPTrainer:
         spike_times: Optional[torch.Tensor] = None
     ) -> List[Tuple[int, int, int]]:
         """
-        Find Winner-Take-All winners using first-spike competition (VECTORIZED).
+        Find Winner-Take-All winners using PROPER competition (VECTORIZED).
 
         Paper Reference (Kheradpisheh 2018):
-            "At each location, the first firing neuron inhibits all other
-            neurons in all feature maps at that location."
+            "When a neuron fires, in a specific location, it inhibits other
+            neurons in that location belonging to other neuronal maps (i.e.,
+            resets their potentials to zero) and does not allow them to fire
+            until the next image is shown. Also, it PREVENTS OTHER NEURONS,
+            AT ALL LOCATIONS, IN ITS OWN MAP TO FIRE."
 
-        This is a fully vectorized implementation that finds all winners
-        in parallel using PyTorch tensor operations. ~10-100x faster.
+        This implements BOTH competitions:
+            1. INTRA-MAP (global): Only ONE neuron per feature map wins
+               (the first to fire across all spatial locations)
+            2. INTER-MAP (local): At each location, only ONE feature wins
+
+        CRITICAL FIX: Previous implementation only did inter-map competition,
+        allowing multiple spatial locations to update the same feature map's
+        weights. This caused all features to converge to averaged/same patterns.
 
         Args:
             spikes: Spike tensor (B, C, H, W).
@@ -2078,7 +2087,7 @@ class STDPTrainer:
 
         Returns:
             List of (feature_idx, y, x) tuples for winning neurons.
-            These are the neurons that fired first at each spatial location.
+            At most ONE winner per feature map (intra-map competition).
         """
         wta_cfg = self.config.wta
 
@@ -2092,79 +2101,97 @@ class STDPTrainer:
         device = spikes.device
 
         if spike_times is not None and wta_cfg.mode in ('global', 'both'):
-            # VECTORIZED first-spike WTA
+            # VECTORIZED first-spike WTA with PROPER intra-map competition
             # spike_times: (B, C, H, W), -1 means never fired
-            
+
             # Use first batch element (typical for online STDP)
             times = spike_times[0]  # (C, H, W)
-            
+
             # Replace -1 (never fired) with inf so argmin works correctly
             times_for_argmin = torch.where(
                 times >= 0,
                 times,
                 torch.tensor(float('inf'), device=device, dtype=times.dtype)
             )  # (C, H, W)
-            
-            # Find winner (earliest spike) at each spatial location
-            # argmin along channel dimension
-            winner_features = times_for_argmin.argmin(dim=0)  # (H, W)
-            
-            # Find which locations have ANY spike (min time < inf)
-            min_times = times_for_argmin.min(dim=0).values  # (H, W)
-            has_spike = min_times < float('inf')  # (H, W)
-            
-            # Get coordinates of locations with spikes
-            spike_locations = torch.nonzero(has_spike, as_tuple=False)  # (N, 2) -> [y, x]
-            
-            if len(spike_locations) == 0:
+
+            # ================================================================
+            # INTRA-MAP COMPETITION (CRITICAL FIX)
+            # For each feature map, find the FIRST neuron to fire
+            # (minimum spike time across all spatial locations)
+            # ================================================================
+            times_flat = times_for_argmin.view(C, -1)  # (C, H*W)
+
+            # Find earliest spike time for each feature map
+            min_time_per_feature, min_idx_per_feature = times_flat.min(dim=1)  # (C,), (C,)
+
+            # Which features actually fired? (min time < inf)
+            feature_fired = min_time_per_feature < float('inf')  # (C,)
+
+            # Get winning feature indices
+            winning_feature_indices = torch.nonzero(feature_fired, as_tuple=True)[0]  # (N_winners,)
+
+            if len(winning_feature_indices) == 0:
                 return []
-            
-            # Gather winning features at those locations
-            y_coords = spike_locations[:, 0]
-            x_coords = spike_locations[:, 1]
-            winning_features = winner_features[y_coords, x_coords]
-            
-            # Build winner list
-            winners = [
-                (int(f), int(y), int(x))
-                for f, y, x in zip(
-                    winning_features.tolist(),
-                    y_coords.tolist(),
-                    x_coords.tolist()
-                )
-            ]
+
+            # For each winning feature, get the spatial location of the first spike
+            winners = []
+            for feat_idx in winning_feature_indices.tolist():
+                flat_idx = min_idx_per_feature[feat_idx].item()
+                winner_y = flat_idx // W
+                winner_x = flat_idx % W
+                winners.append((feat_idx, winner_y, winner_x))
+
+            # ================================================================
+            # INTER-MAP COMPETITION (optional, for mode='both')
+            # At each winning location, only keep the feature that fired first
+            # This handles cases where multiple features have their first spike
+            # at the same spatial location
+            # ================================================================
+            if wta_cfg.mode == 'both' and len(winners) > 1:
+                # Group winners by location
+                location_to_winners = {}
+                for feat, y, x in winners:
+                    loc = (y, x)
+                    spike_time = times_for_argmin[feat, y, x].item()
+                    if loc not in location_to_winners:
+                        location_to_winners[loc] = []
+                    location_to_winners[loc].append((feat, spike_time))
+
+                # Keep only the earliest spike at each location
+                filtered_winners = []
+                for (y, x), feat_times in location_to_winners.items():
+                    # Sort by spike time and keep earliest
+                    feat_times.sort(key=lambda ft: ft[1])
+                    earliest_feat = feat_times[0][0]
+                    filtered_winners.append((earliest_feat, y, x))
+
+                winners = filtered_winners
 
         else:
-            # VECTORIZED fallback: use spike count
+            # VECTORIZED fallback: use spike count with intra-map competition
             # Use first batch element
             spikes_b = spikes[0]  # (C, H, W)
-            
-            # Find which locations have ANY spike
-            has_spike = spikes_b.sum(dim=0) > 0  # (H, W)
-            
-            # Find winner (highest spike count) at each location
-            winner_features = spikes_b.argmax(dim=0)  # (H, W)
-            
-            # Get coordinates of locations with spikes
-            spike_locations = torch.nonzero(has_spike, as_tuple=False)  # (N, 2)
-            
-            if len(spike_locations) == 0:
+
+            # For each feature map, find the location with most spikes
+            spikes_flat = spikes_b.view(C, -1)  # (C, H*W)
+            max_spikes_per_feature, max_idx_per_feature = spikes_flat.max(dim=1)  # (C,), (C,)
+
+            # Which features actually fired?
+            feature_fired = max_spikes_per_feature > 0  # (C,)
+
+            # Get winning feature indices
+            winning_feature_indices = torch.nonzero(feature_fired, as_tuple=True)[0]
+
+            if len(winning_feature_indices) == 0:
                 return []
-            
-            # Gather winning features
-            y_coords = spike_locations[:, 0]
-            x_coords = spike_locations[:, 1]
-            winning_features = winner_features[y_coords, x_coords]
-            
-            # Build winner list
-            winners = [
-                (int(f), int(y), int(x))
-                for f, y, x in zip(
-                    winning_features.tolist(),
-                    y_coords.tolist(),
-                    x_coords.tolist()
-                )
-            ]
+
+            # For each winning feature, get the spatial location
+            winners = []
+            for feat_idx in winning_feature_indices.tolist():
+                flat_idx = max_idx_per_feature[feat_idx].item()
+                winner_y = flat_idx // W
+                winner_x = flat_idx % W
+                winners.append((feat_idx, winner_y, winner_x))
 
         return winners
     
@@ -2281,10 +2308,13 @@ class STDPTrainer:
                     delta_w[feat] += delta_ltp + delta_ltd
                     n_updates += in_ch * kH * kW
 
-            # Average if multiple winners updated same feature
+            # NOTE: With proper intra-map competition (fixed in _find_wta_winners),
+            # there should be at most ONE winner per feature map.
+            # This averaging is kept as a safety check but should rarely trigger.
             for feat, locations in winners_by_feat.items():
                 n_winners = len(locations)
                 if n_winners > 1:
+                    self.logger.debug(f"Multiple winners for feature {feat}: {n_winners} (unexpected)")
                     delta_w[feat] /= n_winners
 
             # Apply updates and clamp
