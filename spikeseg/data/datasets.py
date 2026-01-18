@@ -1239,18 +1239,27 @@ class EBSSADataset(EventDataset):
                 obj_x, obj_y, obj_ts = None, None, None
 
             if obj_x is not None and obj_y is not None and len(obj_x) > 0:
-                # Get event time range
+                # Convert to numpy arrays if needed
+                obj_x = np.asarray(obj_x).flatten()
+                obj_y = np.asarray(obj_y).flatten()
+
+                # Get event time range (convert to scalar for numpy comparison)
                 if len(events.t) > 0:
-                    t_min, t_max = events.t.min(), events.t.max()
+                    t_min = float(events.t.min().item() if hasattr(events.t.min(), 'item') else events.t.min())
+                    t_max = float(events.t.max().item() if hasattr(events.t.max(), 'item') else events.t.max())
                 else:
-                    t_min, t_max = 0, float('inf')
+                    t_min, t_max = 0.0, float('inf')
 
                 # Find object positions within event time window
                 if obj_ts is not None and len(obj_ts) > 0:
+                    obj_ts = np.asarray(obj_ts).flatten()
                     # Filter to positions within time window
                     time_mask = (obj_ts >= t_min) & (obj_ts <= t_max)
-                    pos_x = obj_x[time_mask] if time_mask.any() else obj_x
-                    pos_y = obj_y[time_mask] if time_mask.any() else obj_y
+                    if np.any(time_mask):
+                        pos_x = obj_x[time_mask]
+                        pos_y = obj_y[time_mask]
+                    else:
+                        pos_x, pos_y = obj_x, obj_y
                 else:
                     pos_x, pos_y = obj_x, obj_y
 
