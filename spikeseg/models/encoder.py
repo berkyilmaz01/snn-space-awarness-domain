@@ -153,21 +153,27 @@ class PoolingIndices(NamedTuple):
 class EncoderOutput:
     """
     Complete output from encoder forward pass.
-    
+
     Attributes:
-        classification_spikes: Spikes from final layer (B, C, H, W).
+        classification_spikes: Spikes from final layer (T, B, C, H, W).
+                              T = timesteps, B = batch, C = classes,
+                              H/W = spatial dimensions.
+                              Use .sum(dim=0) to get total spikes per location.
         pooling_indices: Indices for decoder unpooling.
         layer_spikes: Dict of spikes at each layer (for HULK/ASH).
+                     Each tensor has shape (T, B, C, H, W).
         layer_membranes: Dict of membrane potentials (optional).
-    
+
     Properties:
         has_spikes: True if any classification spikes occurred.
         n_classification_spikes: Total count of classification spikes.
-    
+
     Example:
-        >>> output = encoder(events)
+        >>> output = encoder(events, n_timesteps=10)
         >>> if output.has_spikes:
         ...     print(f"Detected {output.n_classification_spikes} spikes")
+        >>> # Get spikes summed over time
+        >>> total_spikes = output.classification_spikes.sum(dim=0)  # (B, C, H, W)
     """
     classification_spikes: torch.Tensor
     pooling_indices: PoolingIndices
@@ -480,9 +486,15 @@ class SpikingEncoderLayer(nn.Module):
         self.conv.weight.data.clamp_(0, 1)
         
         # Spiking neuron
+        # Convert absolute leak value to fraction for LIFNeuron
+        # Paper (IGARSS 2023): "λ is set to 90% and 10% of the neuron threshold"
+        # LayerConfig stores leak as absolute value (e.g., 9.0 = 90% of threshold 10.0)
+        # LIFNeuron expects leak_factor as fraction in [0, 1]
+        leak_factor = leak / threshold if threshold > 0 else 0.0
+
         self.neuron = LIFNeuron(
             threshold=threshold,
-            leak_factor=leak,
+            leak_factor=leak_factor,
             leak_mode=leak_mode
         )
         
