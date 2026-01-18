@@ -203,7 +203,7 @@ class STDPParams:
     weight_min: float = 0.0
     weight_max: float = 1.0
     weight_init_mean: float = 0.8
-    weight_init_std: float = 0.01
+    weight_init_std: float = 0.05
     use_soft_bounds: bool = True
     
     @classmethod
@@ -220,8 +220,8 @@ class ModelParams:
     conv2_channels: int = 36
     kernel_sizes: tuple = (5, 5, 7)
     pool_size: int = 2
-    thresholds: tuple = (10.0, 10.0, 10.0)
-    leaks: tuple = (9.0, 1.0, 0.0)
+    thresholds: tuple = (10.0, 60.0, 2.0)
+    leaks: tuple = (9.0, 6.0, 0.0)
     use_dog_filters: bool = True
     
     def __post_init__(self):
@@ -248,7 +248,7 @@ class DataParams:
     num_workers: int = 4
     pin_memory: bool = True
     timestep_ms: float = 100.0
-    n_timesteps: int = 10
+    n_timesteps: int = 20
     input_height: int = 128
     input_width: int = 128
     input_channels: int = 1

@@ -47,7 +47,7 @@ stdp:
   weight_min: 0.0         # Minimum weight value
   weight_max: 1.0         # Maximum weight value
   weight_init_mean: 0.8   # Weight initialization mean
-  weight_init_std: 0.01   # Weight initialization std (IGARSS: 0.01)
+  weight_init_std: 0.05   # Weight initialization std (Kheradpisheh 2018: 0.05)
   use_soft_bounds: true   # Use multiplicative STDP: Δw = α·w·(1-w)
 
 # -----------------------------------------------------------------------------
@@ -100,9 +100,9 @@ data:
   num_workers: 4            # DataLoader workers
   pin_memory: true          # Pin memory for faster GPU transfer
   
-  # Event/spike parameters
+  # Event/spike parameters (SpikeSEG: 20 timesteps for events)
   timestep_ms: 100.0        # Simulation timestep in milliseconds
-  n_timesteps: 10           # Number of timesteps per sample
+  n_timesteps: 20           # Number of timesteps per sample (10 event + 10 propagation)
   input_height: 128         # Input height
   input_width: 128          # Input width
   input_channels: 1         # Input channels
@@ -124,9 +124,10 @@ model:
   kernel_sizes: [5, 5, 7]   # Kernel sizes for Conv1, Conv2, Conv3
   pool_size: 2              # Pooling kernel size
   
-  # Layer-wise leak (IGARSS 2023: "90% and 10% of threshold value")
-  thresholds: [10.0, 10.0, 10.0]  # Spike thresholds
-  leaks: [9.0, 1.0, 0.0]          # Leak values: 90%, 10%, 0% of threshold
+  # Layer-wise thresholds and leak (Kheradpisheh 2018, IGARSS 2023)
+  # Thresholds: Conv1=10, Conv2=60, Conv3=2 (task-specific per Kheradpisheh 2018)
+  thresholds: [10.0, 60.0, 2.0]   # Spike thresholds per layer
+  leaks: [9.0, 6.0, 0.0]          # Leak values: 90%, 10%, 0% of threshold
   
   # Initialization
   use_dog_filters: true     # Use Difference-of-Gaussians for Conv1
