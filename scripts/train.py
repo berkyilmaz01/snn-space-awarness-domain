@@ -1379,18 +1379,26 @@ class STDPTrainer:
             from spikeseg.core.functional import create_dog_filters
             
             k = self.config.model.kernel_sizes[0]
-            dog = create_dog_filters(size=k, sigma_center=1.0, sigma_surround=2.0)
+            n_in = self.config.data.input_channels
+            n_out = self.config.model.conv1_channels
             
-            n_filters = self.config.model.conv1_channels
+            # Create base DoG filters [2, 1, k, k] (ON/OFF center-surround)
+            dog = create_dog_filters(size=k, sigma_center=1.0, sigma_surround=2.0)
             n_dog = dog.shape[0]  # 2 (ON and OFF)
             
-            # Expand to required number of filters
-            if n_filters <= n_dog:
-                filters = dog[:n_filters]
+            # Expand to required number of output filters
+            if n_out <= n_dog:
+                filters = dog[:n_out]
             else:
                 # Duplicate and scale
-                repeats = (n_filters + n_dog - 1) // n_dog
-                filters = dog.repeat(repeats, 1, 1, 1)[:n_filters]
+                repeats = (n_out + n_dog - 1) // n_dog
+                filters = dog.repeat(repeats, 1, 1, 1)[:n_out]
+            
+            # Now filters is [n_out, 1, k, k], need [n_out, n_in, k, k]
+            if n_in > 1:
+                # Replicate the filter across input channels
+                # Each output filter responds to all input channels equally
+                filters = filters.repeat(1, n_in, 1, 1)
             
             with torch.no_grad():
                 model.encoder.conv1.conv.weight.copy_(filters)

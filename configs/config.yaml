@@ -107,7 +107,7 @@ data:
   n_timesteps: 20           # Number of timesteps per sample (10 event + 10 propagation)
   input_height: 128         # Input height
   input_width: 128          # Input width
-  input_channels: 1         # Input channels
+  input_channels: 2         # Input channels (2 for ON/OFF polarity)
   
   # Processing
   normalize: true           # Normalize event counts
