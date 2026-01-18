@@ -1334,6 +1334,8 @@ class STDPTrainer:
         cfg = self.config.model
         
         # Create encoder config
+        # NOTE: Pooling parameters from config.yaml are now properly applied
+        # IGARSS 2023 doesn't specify pooling, but Kheradpisheh 2018 uses 7x7/6 for Pool1
         enc_config = EncoderConfig(
             input_channels=self.config.data.input_channels,
             conv1=LayerConfig(
@@ -1353,7 +1355,12 @@ class STDPTrainer:
                 kernel_size=cfg.kernel_sizes[2],
                 threshold=cfg.thresholds[2],
                 leak=cfg.leaks[2]
-            )
+            ),
+            # Pooling configuration from config.yaml
+            pool1_kernel_size=cfg.pool1_kernel,
+            pool1_stride=cfg.pool1_stride,
+            pool2_kernel_size=cfg.pool2_kernel,
+            pool2_stride=cfg.pool2_stride,
         )
         
         model = SpikeSEG(config=enc_config, device=self.device)
