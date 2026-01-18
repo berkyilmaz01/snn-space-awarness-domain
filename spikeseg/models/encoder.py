@@ -521,10 +521,14 @@ class SpikingEncoderLayer(nn.Module):
         
         # State
         self.register_buffer('membrane', None)
-    
+        self.register_buffer('has_fired', None)  # Fire-once tracking (Kheradpisheh 2018)
+        self.register_buffer('pre_reset_membrane', None)  # For WTA tie-breaking
+
     def reset_state(self) -> None:
-        """Reset membrane potential."""
+        """Reset membrane potential and fire-once tracking."""
         self.membrane = None
+        self.has_fired = None  # Reset fire-once mask for new stimulus
+        self.pre_reset_membrane = None
         # Note: LIFNeuron is stateless - membrane is managed here
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -547,21 +551,43 @@ class SpikingEncoderLayer(nn.Module):
         
         # Convolution
         current = self.conv(x)
-        
+
         # Initialize membrane if needed
         if self.membrane is None or self.membrane.shape != current.shape:
             self.membrane = torch.zeros_like(current)
-        
-        # LIF dynamics
-        spikes, self.membrane = self.neuron(current, self.membrane)
-        
+
+        # Initialize fire-once tracking if needed (Kheradpisheh 2018)
+        if self.has_fired is None or self.has_fired.shape != current.shape:
+            self.has_fired = torch.zeros_like(current)
+
+        # LIF dynamics with fire-once constraint
+        # (Kheradpisheh 2018: "neurons are not allowed to fire more than once per stimulus")
+        spikes, self.membrane, self.pre_reset_membrane = self.neuron(
+            current, self.membrane, self.has_fired
+        )
+
+        # Update fire-once mask
+        self.has_fired = torch.clamp(self.has_fired + spikes, 0.0, 1.0)
+
         return spikes, self.membrane
     
     @property
     def weight(self) -> torch.Tensor:
         """Get convolution weights."""
         return self.conv.weight
-    
+
+    def get_pre_reset_membrane(self) -> Optional[torch.Tensor]:
+        """
+        Get membrane potential before reset from last forward pass.
+
+        Required for correct WTA tie-breaking (Kheradpisheh 2018):
+        "pick the one which has the highest potential"
+
+        Returns:
+            Pre-reset membrane tensor, or None if no forward pass yet.
+        """
+        return self.pre_reset_membrane
+
     def __repr__(self) -> str:
         return (
             f"SpikingEncoderLayer({self.in_channels} → {self.out_channels}, "
