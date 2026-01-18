@@ -1912,10 +1912,18 @@ class STDPTrainer:
             return {'n_spikes': 0, 'n_updates': 0, 'winners': [], 'homeostasis': {}}
         
         x = x.to(self.device)
-        
-        # Ensure 4D: (B, C, H, W)
+
+        # Handle different input dimensions:
+        # - Dataset returns: (T, C, H, W) voxel grid per sample
+        # - DataLoader batches to: (B, T, C, H, W)
+        # - Encoder expects: (T, B, C, H, W) or (B, C, H, W) for single frame
         if x.dim() == 3:
+            # (C, H, W) -> (1, C, H, W)
             x = x.unsqueeze(0)
+        elif x.dim() == 5:
+            # (B, T, C, H, W) -> (T, B, C, H, W)
+            # DataLoader batches along dim 0, but encoder expects time on dim 0
+            x = x.permute(1, 0, 2, 3, 4)
         
         result = {
             'n_spikes': 0,
