@@ -1000,9 +1000,10 @@ class STDPLearner:
         else:
             weights = weights + delta_w
         
-        # Clamp weights
-        if self.config.variant == STDPVariant.ADDITIVE:
-            weights.clamp_(self.config.weight_min, self.config.weight_max)
+        # Clamp weights to [0, 1] (Kheradpisheh 2018: "all weights are bounded in [0, 1]")
+        # This is required for BOTH additive and multiplicative variants
+        # Multiplicative soft bounds reduce but don't eliminate drift
+        weights.clamp_(self.config.weight_min, self.config.weight_max)
         
         # Record statistics
         convergence = compute_convergence_metric(weights)

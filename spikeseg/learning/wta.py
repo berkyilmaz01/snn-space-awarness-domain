@@ -759,20 +759,25 @@ class WTAInhibition(nn.Module):
         self,
         spikes: torch.Tensor,
         membrane: torch.Tensor,
+        pre_reset_membrane: Optional[torch.Tensor] = None,
         threshold: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply WTA inhibition.
-        
+
         Args:
             spikes: Input spikes, shape (batch, channels, H, W).
-            membrane: Membrane potential, same shape.
+            membrane: Membrane potential (post-reset), same shape.
+            pre_reset_membrane: Membrane potential BEFORE reset. Required for
+                               correct tie-breaking per Kheradpisheh 2018:
+                               "pick the one which has the highest potential".
+                               If None, falls back to membrane (incorrect behavior).
             threshold: Optional external threshold. If None and homeostasis
                       enabled, uses adaptive thresholds.
-        
+
         Returns:
             Tuple of (filtered_spikes, new_membrane).
-        
+
         Raises:
             WTARuntimeError: If inputs are invalid.
         """
@@ -780,10 +785,12 @@ class WTAInhibition(nn.Module):
         _validate_4d_tensor(membrane, "membrane")
         _validate_same_shape(spikes, membrane, "spikes", "membrane")
         _validate_same_device(spikes, membrane, "spikes", "membrane")
-        
-        # Apply global WTA
+
+        # Apply global WTA with pre_reset_membrane for tie-breaking (Kheradpisheh 2018)
         if self.config.mode in (WTAMode.GLOBAL, WTAMode.BOTH):
-            spikes, membrane, winner_mask = wta_global_membrane(spikes, membrane)
+            spikes, membrane, winner_mask = wta_global_membrane(
+                spikes, membrane, pre_reset_membrane
+            )
         else:
             winner_mask = spikes.clone()
         
