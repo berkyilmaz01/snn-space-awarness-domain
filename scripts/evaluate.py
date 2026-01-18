@@ -141,7 +141,7 @@ def load_model(checkpoint_path: Path, device: torch.device) -> SpikeSEGEncoder:
     """
     logger.info(f"Loading checkpoint: {checkpoint_path}")
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Extract config from checkpoint or use defaults
     if 'config' in checkpoint:
