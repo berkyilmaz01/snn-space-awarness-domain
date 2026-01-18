@@ -85,9 +85,9 @@ homeostasis:
 # Convergence Monitoring
 # -----------------------------------------------------------------------------
 convergence:
-  min_wins_per_neuron: 10   # Min WTA wins for neuron to be "converged"
-  target_ratio: 0.95        # Target fraction of converged neurons
-  patience: 5               # Epochs without improvement before stopping
+  min_wins_per_neuron: 5    # Min WTA wins for neuron to be "converged" (lowered)
+  target_ratio: 0.80        # Target fraction of converged neurons (80% is good)
+  patience: 10              # Epochs without improvement before stopping (more patient)
   delta_threshold: 0.0001   # Weight change threshold for convergence
   check_interval: 100       # Check convergence every N samples
 
@@ -98,7 +98,7 @@ data:
   dataset: "ebssa"          # Dataset name
   data_root: "../ebssa-data-utah/ebssa"  # Data directory (contains 'Labelled Data' folder)
   sensor: "all"             # Use ALL sensors (ATIS + DAVIS) for more data
-  include_unlabelled: true  # Include unlabelled data for unsupervised STDP training
+  include_unlabelled: false  # Disabled - unlabelled data has incompatible format
   batch_size: 1             # Batch size (typically 1 for online STDP)
   num_workers: 4            # DataLoader workers
   pin_memory: true          # Pin memory for faster GPU transfer
