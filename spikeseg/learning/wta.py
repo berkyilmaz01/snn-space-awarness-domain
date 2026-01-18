@@ -255,24 +255,27 @@ def wta_global_membrane(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Global WTA with winner mask output.
-    
+
     Intra-map competition: within each feature map, only the first
     neuron to spike wins. All others are inhibited.
-    
+
+    Tie-breaking (Kheradpisheh 2018):
+        "pick the one which has the highest potential"
+
     Paper Reference:
         "Each neuron can fire at most once per stimulus"
         "global intra-map competition"
-    
+
     Args:
         spikes: Current spikes, shape (batch, channels, height, width).
         membrane: Current membrane potential, same shape.
-    
+
     Returns:
         Tuple of (filtered_spikes, new_membrane, winner_mask):
             - filtered_spikes: Only winning spikes remain
             - new_membrane: Membrane reset for inhibited neurons
             - winner_mask: Binary mask of winners (for STDP)
-    
+
     Raises:
         WTARuntimeError: If inputs are invalid.
     """
@@ -280,44 +283,52 @@ def wta_global_membrane(
     _validate_4d_tensor(membrane, "membrane")
     _validate_same_shape(spikes, membrane, "spikes", "membrane")
     _validate_same_device(spikes, membrane, "spikes", "membrane")
-    
+
     batch, channels, height, width = spikes.shape
     device = spikes.device
-    
+
     # Flatten spatial dimensions
     spikes_flat = spikes.view(batch, channels, -1)  # (B, C, H*W)
-    
+    membrane_flat = membrane.view(batch, channels, -1)  # (B, C, H*W)
+
     # Find if any neuron spiked in each feature map
     has_spike = spikes_flat.sum(dim=2) > 0  # (B, C)
-    
-    # Get index of first spike (based on max - arbitrary but deterministic)
-    # For proper first-spike, we'd need spike times
-    first_spike_idx = spikes_flat.argmax(dim=2)  # (B, C)
-    
+
+    # Mask membrane by spikes and find winner by highest potential (Kheradpisheh 2018)
+    # "pick the one which has the highest potential"
+    masked_membrane = membrane_flat * spikes_flat  # Only consider neurons that spiked
+    # Use -inf for non-spiking neurons so they don't win
+    masked_membrane = torch.where(
+        spikes_flat > 0,
+        masked_membrane,
+        torch.tensor(float('-inf'), device=device, dtype=membrane.dtype)
+    )
+    winner_idx = masked_membrane.argmax(dim=2)  # (B, C)
+
     # Create new spike tensor with only winners
     new_spikes_flat = torch.zeros_like(spikes_flat)
-    
+
     # Indexing tensors
     batch_idx = torch.arange(batch, device=device).unsqueeze(1).expand(-1, channels)
     channel_idx = torch.arange(channels, device=device).unsqueeze(0).expand(batch, -1)
-    
+
     # Set winner spikes
     new_spikes_flat[
         batch_idx[has_spike],
         channel_idx[has_spike],
-        first_spike_idx[has_spike]
+        winner_idx[has_spike]
     ] = 1.0
-    
+
     # Reshape to original
     new_spikes = new_spikes_flat.view_as(spikes)
-    
+
     # Winner mask is same as new_spikes
     winner_mask = new_spikes.clone()
-    
+
     # Inhibit membrane in feature maps that had winners
     inhibition_mask = has_spike.unsqueeze(-1).unsqueeze(-1).expand_as(membrane)
     new_membrane = torch.where(inhibition_mask, torch.zeros_like(membrane), membrane)
-    
+
     return new_spikes, new_membrane, winner_mask
 
 
