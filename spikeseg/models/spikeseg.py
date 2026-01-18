@@ -284,17 +284,35 @@ class SpikeSEG(nn.Module):
     def decode(self, encoder_output: EncoderOutput) -> torch.Tensor:
         """
         Forward pass through decoder.
-        
+
+        Maps classification spikes back to pixel space for saliency mapping.
+
         Args:
-            encoder_output: Output from encoder.
-        
+            encoder_output: Output from encoder. The classification_spikes
+                           can be 5D (T, B, C, H, W) from temporal processing
+                           or 4D (B, C, H, W) for single timestep.
+
         Returns:
             Saliency/segmentation map, shape (batch, input_channels, H, W).
+
+        Note:
+            If classification_spikes is 5D, spikes are summed over time
+            dimension to produce a single saliency map showing which pixels
+            contributed to classification across all timesteps.
         """
         self._create_decoder()
-        
+
+        # Get classification spikes
+        classification_spikes = encoder_output.classification_spikes
+
+        # Handle 5D temporal output from encoder: (T, B, C, H, W) -> (B, C, H, W)
+        # Sum over time dimension to get total spike contribution
+        # This follows the paper's saliency mapping approach
+        if classification_spikes.dim() == 5:
+            classification_spikes = classification_spikes.sum(dim=0)
+
         return self._decoder(
-            classification_spikes=encoder_output.classification_spikes,
+            classification_spikes=classification_spikes,
             pool1_indices=encoder_output.pooling_indices.pool1_indices,
             pool2_indices=encoder_output.pooling_indices.pool2_indices,
             pool1_output_size=encoder_output.pooling_indices.pool1_output_size,
