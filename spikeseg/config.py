@@ -197,9 +197,9 @@ def load_config(
 
 @dataclass
 class STDPParams:
-    """STDP learning parameters."""
-    lr_plus: float = 0.04
-    lr_minus: float = 0.03
+    """STDP learning parameters (Kheradpisheh 2018)."""
+    lr_plus: float = 0.004   # α⁺ potentiation rate
+    lr_minus: float = 0.003  # α⁻ depression rate
     weight_min: float = 0.0
     weight_max: float = 1.0
     weight_init_mean: float = 0.8
@@ -214,12 +214,17 @@ class STDPParams:
 
 @dataclass
 class ModelParams:
-    """Model architecture parameters."""
+    """Model architecture parameters (Kheradpisheh 2018)."""
     n_classes: int = 1
     conv1_channels: int = 4
     conv2_channels: int = 36
     kernel_sizes: tuple = (5, 5, 7)
-    pool_size: int = 2
+    # Pool1: 7×7 kernel, stride 6 (almost no overlap) - Kheradpisheh 2018
+    pool1_kernel: int = 7
+    pool1_stride: int = 6
+    # Pool2: 2×2 kernel, stride 2 (no overlap)
+    pool2_kernel: int = 2
+    pool2_stride: int = 2
     thresholds: tuple = (10.0, 60.0, 2.0)
     leaks: tuple = (9.0, 6.0, 0.0)
     use_dog_filters: bool = True

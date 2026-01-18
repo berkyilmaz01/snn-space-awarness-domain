@@ -402,14 +402,20 @@ class SpikingConv2d(nn.Module):
         total_spikes = torch.zeros_like(conv_out)
         spike_times = torch.full_like(conv_out, fill_value=-1.0)
         pre_reset_membrane = torch.zeros_like(conv_out)
+        # Fire-once constraint (Kheradpisheh 2018): track which neurons have already fired
+        has_fired = torch.zeros_like(conv_out)
 
         # Optional: track spikes at each timestep
         all_spikes: List[torch.Tensor] = []
 
         # Simulate over timesteps
         for t in range(n_timesteps):
-            # Process through neuron (returns pre-reset membrane for WTA)
-            spikes, membrane, pre_reset_membrane = self.neuron(conv_out, membrane)
+            # Process through neuron with fire-once constraint
+            # (Kheradpisheh 2018: "neurons are not allowed to fire more than once")
+            spikes, membrane, pre_reset_membrane = self.neuron(conv_out, membrane, has_fired)
+
+            # Update has_fired mask
+            has_fired = torch.clamp(has_fired + spikes, 0.0, 1.0)
 
             # Accumulate total spikes
             total_spikes = total_spikes + spikes

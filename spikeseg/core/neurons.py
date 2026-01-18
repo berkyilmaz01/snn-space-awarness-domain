@@ -43,7 +43,7 @@ Example:
 
 from __future__ import annotations
 
-from typing import Literal, Tuple
+from typing import Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -167,7 +167,8 @@ class BaseNeuron(nn.Module):
     def forward(
         self,
         input_current: torch.Tensor,
-        membrane: torch.Tensor
+        membrane: torch.Tensor,
+        has_fired: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Process one timestep.
@@ -176,6 +177,9 @@ class BaseNeuron(nn.Module):
             input_current: Incoming current (weighted sum of input spikes).
                           Shape: (batch, channels, height, width) or (batch, features)
             membrane: Current membrane potential (same shape as input_current).
+            has_fired: Optional mask of neurons that have already fired.
+                      If provided, these neurons are prevented from firing again.
+                      (Kheradpisheh 2018: "neurons are not allowed to fire more than once")
 
         Returns:
             Tuple of (spikes, new_membrane, pre_reset_membrane):
@@ -266,7 +270,8 @@ class IFNeuron(BaseNeuron):
     def forward(
         self,
         input_current: torch.Tensor,
-        membrane: torch.Tensor
+        membrane: torch.Tensor,
+        has_fired: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Process one timestep of IF neuron dynamics.
@@ -274,6 +279,9 @@ class IFNeuron(BaseNeuron):
         Args:
             input_current: Incoming current. Shape: (batch, channels, ...)
             membrane: Current membrane potential. Same shape as input_current.
+            has_fired: Optional mask of neurons that have already fired.
+                      If provided, these neurons are prevented from firing again.
+                      (Kheradpisheh 2018: "neurons are not allowed to fire more than once")
 
         Returns:
             Tuple of (spikes, new_membrane, pre_reset_membrane):
@@ -296,6 +304,11 @@ class IFNeuron(BaseNeuron):
         # Step 2: Check threshold and generate spikes
         spikes = spike_function(membrane, self.threshold.item())
 
+        # Step 2b: Fire-once constraint (Kheradpisheh 2018)
+        # "neurons are not allowed to fire more than once"
+        if has_fired is not None:
+            spikes = spikes * (1.0 - has_fired)  # Mask out already-fired neurons
+
         # Step 3: Reset neurons that fired
         # Where spikes=1, set membrane to 0
         # Where spikes=0, keep membrane as is
@@ -303,7 +316,7 @@ class IFNeuron(BaseNeuron):
         membrane = membrane * (1.0 - spikes)
 
         return spikes, membrane, pre_reset_membrane
-    
+
     def __repr__(self) -> str:
         """String representation for debugging."""
         return f"IFNeuron(threshold={self.threshold.item():.2f})"
@@ -428,7 +441,8 @@ class LIFNeuron(BaseNeuron):
     def forward(
         self,
         input_current: torch.Tensor,
-        membrane: torch.Tensor
+        membrane: torch.Tensor,
+        has_fired: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Process one timestep of LIF neuron dynamics.
@@ -436,6 +450,9 @@ class LIFNeuron(BaseNeuron):
         Args:
             input_current: Incoming current. Shape: (batch, channels, ...)
             membrane: Current membrane potential. Same shape as input_current.
+            has_fired: Optional mask of neurons that have already fired.
+                      If provided, these neurons are prevented from firing again.
+                      (Kheradpisheh 2018: "neurons are not allowed to fire more than once")
 
         Returns:
             Tuple of (spikes, new_membrane, pre_reset_membrane):
@@ -467,6 +484,11 @@ class LIFNeuron(BaseNeuron):
 
         # Step 3: Check threshold and generate spikes
         spikes = spike_function(membrane, self.threshold.item())
+
+        # Step 3b: Fire-once constraint (Kheradpisheh 2018)
+        # "neurons are not allowed to fire more than once"
+        if has_fired is not None:
+            spikes = spikes * (1.0 - has_fired)  # Mask out already-fired neurons
 
         # Step 4: Reset neurons that fired
         membrane = membrane * (1.0 - spikes)

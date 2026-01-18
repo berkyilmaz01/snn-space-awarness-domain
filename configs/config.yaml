@@ -39,11 +39,11 @@ gradient_checkpointing: false  # Not used for STDP
 # -----------------------------------------------------------------------------
 # STDP Learning Parameters
 # -----------------------------------------------------------------------------
-# Paper (IGARSS 2023): α⁺ = 0.04, α⁻ = 0.03
 # Paper (Kheradpisheh 2018): α⁺ = 0.004, α⁻ = 0.003
+# Note: IGARSS 2023 uses 10x higher (0.04/0.03) - use those for faster convergence
 stdp:
-  lr_plus: 0.04           # LTP learning rate (potentiation)
-  lr_minus: 0.03          # LTD learning rate (depression)
+  lr_plus: 0.004          # LTP learning rate (potentiation) - Kheradpisheh 2018
+  lr_minus: 0.003         # LTD learning rate (depression) - Kheradpisheh 2018
   weight_min: 0.0         # Minimum weight value
   weight_max: 1.0         # Maximum weight value
   weight_init_mean: 0.8   # Weight initialization mean
@@ -53,8 +53,9 @@ stdp:
 # -----------------------------------------------------------------------------
 # Winner-Take-All (WTA) Parameters
 # -----------------------------------------------------------------------------
+# Paper uses BOTH global (intra-map) AND local (inter-map) competition
 wta:
-  mode: "global"          # "global", "local", or "both"
+  mode: "both"            # "global", "local", or "both" - paper uses both
   local_radius: 2         # Radius for local inhibition
   enable_homeostasis: true
   target_rate: 0.1        # Target firing rate for homeostasis
@@ -115,20 +116,27 @@ data:
 # -----------------------------------------------------------------------------
 # Model Architecture
 # -----------------------------------------------------------------------------
-# Paper (IGARSS 2023): "4 features in layer 1, 36 features in layer 2"
+# Paper (Kheradpisheh 2018): "4 features in layer 1, 36 features in layer 2"
 # Paper: "5×5 convolution kernel" for Conv1/Conv2, "7×7 final classification"
 model:
   n_classes: 1              # Number of output classes (1 for binary segmentation)
   conv1_channels: 4         # Conv1 output channels
   conv2_channels: 36        # Conv2 output channels
   kernel_sizes: [5, 5, 7]   # Kernel sizes for Conv1, Conv2, Conv3
-  pool_size: 2              # Pooling kernel size
-  
-  # Layer-wise thresholds and leak (Kheradpisheh 2018, IGARSS 2023)
-  # Thresholds: Conv1=10, Conv2=60, Conv3=2 (task-specific per Kheradpisheh 2018)
+
+  # Pooling configuration (Kheradpisheh 2018 Table 1)
+  # Pool1: 7×7 kernel, stride 6 (almost no overlap)
+  pool1_kernel: 7
+  pool1_stride: 6
+  # Pool2: 2×2 kernel, stride 2 (no overlap)
+  pool2_kernel: 2
+  pool2_stride: 2
+
+  # Layer-wise thresholds and leak (Kheradpisheh 2018 Section 3.1)
+  # Thresholds: Conv1=10, Conv2=60, Conv3=2 (Caltech Face/Motorbike task)
   thresholds: [10.0, 60.0, 2.0]   # Spike thresholds per layer
   leaks: [9.0, 6.0, 0.0]          # Leak values: 90%, 10%, 0% of threshold
-  
+
   # Initialization
   use_dog_filters: true     # Use Difference-of-Gaussians for Conv1
 
