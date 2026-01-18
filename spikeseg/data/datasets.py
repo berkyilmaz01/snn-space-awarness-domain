@@ -954,8 +954,12 @@ class EBSSADataset(EventDataset):
         
         # Find .mat files
         for mat_path in sorted(labelled_dir.rglob("*.mat")):
-            # Skip label files
-            if 'label' in mat_path.stem.lower():
+            # Skip pure label files (e.g., *_labels.mat), but keep *_labelled.mat
+            # EBSSA format: event files are named *_labelled.mat (contains events + labels)
+            stem_lower = mat_path.stem.lower()
+            if stem_lower.endswith('_labels') or (
+                '_labels' in stem_lower and not stem_lower.endswith('_labelled')
+            ):
                 continue
             
             # Check sensor
