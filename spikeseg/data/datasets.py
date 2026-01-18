@@ -806,27 +806,44 @@ class EventDataset(Dataset, ABC):
             Tuple of (voxel_grid, label).
             voxel_grid: (T, C, H, W) tensor.
         """
-        events, label = self._load_sample(index)
+        # Try to load sample, with fallback to next valid sample
+        max_attempts = min(10, len(self.recordings))
+        for attempt in range(max_attempts):
+            try:
+                actual_index = (index + attempt) % len(self.recordings)
+                events, label = self._load_sample(actual_index)
+                
+                # Skip empty events
+                if len(events) == 0:
+                    continue
+                
+                # Apply augmentation
+                if self.augmentation is not None:
+                    events = self.augmentation(events)
+                
+                # Convert to voxel grid
+                voxel = events_to_voxel_grid(
+                    events,
+                    n_timesteps=self.n_timesteps,
+                    height=self.height or events.height,
+                    width=self.width or events.width,
+                    normalize=self.normalize,
+                    polarity_channels=self.polarity_channels
+                )
+                
+                # Apply transform
+                if self.transform is not None:
+                    voxel = self.transform(voxel)
+                
+                return voxel, label
+                
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    # Last attempt - raise error
+                    raise RuntimeError(f"Failed to load any valid sample after {max_attempts} attempts: {e}")
+                continue
         
-        # Apply augmentation
-        if self.augmentation is not None:
-            events = self.augmentation(events)
-        
-        # Convert to voxel grid
-        voxel = events_to_voxel_grid(
-            events,
-            n_timesteps=self.n_timesteps,
-            height=self.height or events.height,
-            width=self.width or events.width,
-            normalize=self.normalize,
-            polarity_channels=self.polarity_channels
-        )
-        
-        # Apply transform
-        if self.transform is not None:
-            voxel = self.transform(voxel)
-        
-        return voxel, label
+        raise RuntimeError("No valid samples found")
 
 
 # =============================================================================
@@ -1037,12 +1054,24 @@ class EBSSADataset(EventDataset):
         """Load events and labels for a recording."""
         rec = self.recordings[index]
         
-        # Load events
-        events = load_events_mat(
-            rec['event_path'],
-            height=self._sensor_height,
-            width=self._sensor_width
-        )
+        # Load events with error handling for different .mat formats
+        try:
+            events = load_events_mat(
+                rec['event_path'],
+                height=self._sensor_height,
+                width=self._sensor_width
+            )
+        except (IndexError, KeyError, OSError, ValueError) as e:
+            # File format not supported - create empty events
+            warnings.warn(f"Failed to load {rec['name']}: {e}. Using empty events.")
+            events = EventData(
+                x=np.array([], dtype=np.int32),
+                y=np.array([], dtype=np.int32),
+                p=np.array([], dtype=np.int8),
+                t=np.array([], dtype=np.int64),
+                height=self._sensor_height,
+                width=self._sensor_width
+            )
         
         # Load labels
         label = None
