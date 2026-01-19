@@ -1126,9 +1126,12 @@ class EBSSADataset(EventDataset):
             except Exception:
                 pass
 
-        # Extract object time range from labels for event filtering
+        # Extract object time range AND spatial trajectory from labels
+        obj_time_range = None
+        obj_trajectory = None
         if label is not None and isinstance(label, dict) and 'Obj' in label:
             obj_time_range = self._get_object_time_range(label)
+            obj_trajectory = self._get_object_trajectory(label)
 
         # Filter events to object time range if available
         # This is CRITICAL for EBSSA - recordings are 60-90 seconds but
@@ -1143,11 +1146,27 @@ class EBSSADataset(EventDataset):
 
             # Filter events to object time window
             time_mask = (all_events.t >= t_min) & (all_events.t <= t_max)
+
+            # ALSO filter spatially around object trajectory to suppress stars
+            # Stars are much brighter than satellites, so we need spatial filtering
+            if obj_trajectory is not None:
+                obj_x, obj_y = obj_trajectory
+                # Create spatial mask: events within 30 pixels of any trajectory point
+                spatial_radius = 30
+                spatial_mask = np.zeros(len(all_events.t), dtype=bool)
+                for ox, oy in zip(obj_x, obj_y):
+                    dist_sq = (all_events.x - ox)**2 + (all_events.y - oy)**2
+                    spatial_mask |= (dist_sq <= spatial_radius**2)
+                # Combine temporal and spatial masks
+                combined_mask = time_mask & spatial_mask
+            else:
+                combined_mask = time_mask
+
             events = EventData(
-                x=all_events.x[time_mask],
-                y=all_events.y[time_mask],
-                p=all_events.p[time_mask],
-                t=all_events.t[time_mask],
+                x=all_events.x[combined_mask],
+                y=all_events.y[combined_mask],
+                p=all_events.p[combined_mask],
+                t=all_events.t[combined_mask],
                 height=all_events.height,
                 width=all_events.width
             )
@@ -1217,6 +1236,54 @@ class EBSSADataset(EventDataset):
             if len(obj_ts_flat) > 0:
                 return (float(obj_ts_flat.min()), float(obj_ts_flat.max()))
         except (ValueError, TypeError, IndexError):
+            pass
+
+        return None
+
+    def _get_object_trajectory(
+        self, labels: Dict[str, Any]
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Extract the object's spatial trajectory (x, y coordinates).
+
+        Returns (obj_x, obj_y) arrays or None if not available.
+        Used for spatial filtering to suppress background stars.
+        """
+        if 'Obj' not in labels:
+            return None
+
+        obj = labels['Obj']
+
+        # Helper to unwrap nested 0-d object arrays from MATLAB
+        def unwrap_field(field):
+            if field is None:
+                return None
+            if hasattr(field, 'shape') and field.shape == () and hasattr(field, 'dtype') and field.dtype == object:
+                inner = field.item()
+                return unwrap_field(inner)
+            if hasattr(field, 'flatten'):
+                return field.flatten()
+            return field
+
+        # Extract x, y coordinates
+        obj_x = None
+        obj_y = None
+        if hasattr(obj, 'dtype') and obj.dtype.names:
+            if 'x' in obj.dtype.names:
+                obj_x = unwrap_field(obj['x'])
+            if 'y' in obj.dtype.names:
+                obj_y = unwrap_field(obj['y'])
+        elif isinstance(obj, tuple) and len(obj) >= 2:
+            obj_x, obj_y = obj[0], obj[1]
+
+        if obj_x is None or obj_y is None:
+            return None
+
+        try:
+            obj_x = np.asarray(obj_x).flatten().astype(float)
+            obj_y = np.asarray(obj_y).flatten().astype(float)
+            if len(obj_x) > 0 and len(obj_y) > 0:
+                return (obj_x, obj_y)
+        except (ValueError, TypeError):
             pass
 
         return None
