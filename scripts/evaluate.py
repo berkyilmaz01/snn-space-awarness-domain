@@ -646,6 +646,18 @@ def evaluate_objects(
         n_timesteps = x.shape[0]
         x = x.to(device)
 
+        # Debug: check where input events are located
+        if batch_idx < 3:
+            # x is (T, B, C, H, W) - sum across time and channels
+            input_frame = x.sum(dim=(0, 2))  # (B, H, W)
+            for b_debug in range(min(batch_size, 1)):
+                frame = input_frame[b_debug]  # (H, W)
+                if frame.sum() > 0:
+                    coords = torch.nonzero(frame > 0)
+                    input_y = coords[:, 0].float().mean().item()
+                    input_x = coords[:, 1].float().mean().item()
+                    logger.info(f"    INPUT events center: ({input_x:.1f}, {input_y:.1f}), total pixels: {(frame > 0).sum().item()}")
+
         with torch.no_grad():
             output = model(x)
             pool_indices = output.pooling_indices
