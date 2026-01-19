@@ -179,6 +179,13 @@ def load_model(checkpoint_path: Path, device: torch.device) -> SpikeSEGEncoder:
     filtered_state_dict = {k: v for k, v in new_state_dict.items() if k in param_keys}
 
     model.load_state_dict(filtered_state_dict, strict=False)
+
+    # Fix: Override leak values that get loaded from checkpoint
+    # Training uses leak for STDP stability, but inference works better without it
+    model.conv1.neuron.leak.data.fill_(0.0)
+    model.conv2.neuron.leak.data.fill_(0.0)
+    model.conv3.neuron.leak.data.fill_(0.0)
+
     model.to(device)
     model.eval()
 
