@@ -1075,14 +1075,14 @@ class EBSSADataset(EventDataset):
     
     def _load_sample(self, index: int) -> Tuple[EventData, Any]:
         """Load events and labels for a recording with sliding window.
-        
+
         Uses the sample index to determine which recording and which
         time window to extract events from.
         """
         # Map sample index to recording and window
         rec_idx, win_idx = self._sample_map[index]
         rec = self.recordings[rec_idx]
-        
+
         # Load all events with error handling for different .mat formats
         try:
             all_events = load_events_mat(
@@ -1101,10 +1101,14 @@ class EBSSADataset(EventDataset):
                 height=self._sensor_height,
                 width=self._sensor_width
             )
-        
+
+        # Calculate original window time boundaries BEFORE extraction
+        # (needed for label timestamp filtering)
+        window_time_range = self._get_window_time_range(all_events, win_idx)
+
         # Apply sliding window to extract subset of events
         events = self._extract_window(all_events, win_idx)
-        
+
         # Load labels
         label = None
         if rec['label_path'] is not None:
@@ -1122,17 +1126,48 @@ class EBSSADataset(EventDataset):
                     label = {'Obj': mat['Obj']}
             except Exception:
                 pass
-        
+
         # For segmentation, create binary mask
         # (placeholder - actual format depends on label file structure)
         if label is None:
             # No label - return zeros
             label = torch.zeros(self.height, self.width, dtype=torch.long)
         elif isinstance(label, dict):
-            # Convert bounding box to mask if needed
-            label = self._labels_to_mask(label, events)
-        
+            # Convert bounding box to mask if needed - use original time range
+            label = self._labels_to_mask(label, events, window_time_range)
+
         return events, label
+
+    def _get_window_time_range(
+        self, events: EventData, window_idx: int
+    ) -> Optional[Tuple[float, float]]:
+        """Get the original time range for a window (before timestamp shifting).
+
+        Returns the (t_start, t_end) in the original recording's time domain,
+        which is needed for filtering label timestamps.
+        """
+        if len(events.t) == 0:
+            return None
+
+        if self.windows_per_recording == 1:
+            return (float(events.t.min()), float(events.t.max()))
+
+        t_min = events.t.min()
+        t_max = events.t.max()
+        duration = t_max - t_min
+
+        if duration == 0:
+            return (float(t_min), float(t_max))
+
+        # Same calculation as _extract_window
+        effective_windows = 1.0 + (self.windows_per_recording - 1) * (1.0 - self.window_overlap)
+        window_size = float(duration) / effective_windows
+        step_size = window_size * (1.0 - self.window_overlap)
+
+        window_start = float(t_min) + window_idx * step_size
+        window_end = min(window_start + window_size, float(t_max) + 1)
+
+        return (window_start, window_end)
     
     def _extract_window(self, events: EventData, window_idx: int) -> EventData:
         """Extract a time window from the full event stream.
@@ -1209,13 +1244,22 @@ class EBSSADataset(EventDataset):
     def _labels_to_mask(
         self,
         labels: Dict[str, Any],
-        events: EventData
+        events: EventData,
+        window_time_range: Optional[Tuple[float, float]] = None
     ) -> torch.Tensor:
         """Convert label dict to segmentation mask.
 
         Handles EBSSA format with object trajectories:
         - Obj.x, Obj.y: Object center coordinates over time
         - Obj.ts: Timestamps for each position
+
+        Args:
+            labels: Dictionary with label data (e.g., 'Obj' field)
+            events: EventData for this sample (used for sensor dimensions)
+            window_time_range: Original time range (t_start, t_end) in recording's
+                              time domain, used to filter label timestamps correctly.
+                              This is needed because event timestamps are shifted to
+                              start at 0, but label timestamps are in original domain.
         """
         mask = torch.zeros(self.height, self.width, dtype=torch.long)
 
@@ -1259,14 +1303,16 @@ class EBSSADataset(EventDataset):
                 obj_x = np.asarray(obj_x).flatten()
                 obj_y = np.asarray(obj_y).flatten()
 
-                # Get event time range (convert to scalar for numpy comparison)
-                if len(events.t) > 0:
-                    t_min = float(events.t.min().item() if hasattr(events.t.min(), 'item') else events.t.min())
-                    t_max = float(events.t.max().item() if hasattr(events.t.max(), 'item') else events.t.max())
+                # Use the ORIGINAL window time range for filtering labels
+                # (not the shifted event timestamps which start at 0)
+                if window_time_range is not None:
+                    t_min, t_max = window_time_range
                 else:
+                    # Fallback: use full range (this won't filter correctly but
+                    # is better than using shifted timestamps)
                     t_min, t_max = 0.0, float('inf')
 
-                # Find object positions within event time window
+                # Find object positions within the time window
                 if obj_ts is not None:
                     try:
                         # Handle nested arrays: recursively flatten and convert to float
@@ -1284,7 +1330,9 @@ class EBSSADataset(EventDataset):
                                 pos_x = obj_x[time_mask]
                                 pos_y = obj_y[time_mask]
                             else:
-                                pos_x, pos_y = obj_x, obj_y
+                                # No positions in window - return empty mask
+                                # This is expected for windows without satellites
+                                return mask
                         else:
                             pos_x, pos_y = obj_x, obj_y
                     except (ValueError, TypeError, IndexError):
@@ -1293,7 +1341,7 @@ class EBSSADataset(EventDataset):
                 else:
                     pos_x, pos_y = obj_x, obj_y
 
-                # Create mask around object positions (use mean position for static mask)
+                # Create mask around object positions
                 if len(pos_x) > 0:
                     # Ensure pos_x and pos_y are flat numeric arrays
                     try:
@@ -1303,9 +1351,10 @@ class EBSSADataset(EventDataset):
                         # If conversion fails, skip mask creation
                         pass
                     else:
-                        # Use all positions or subsample for efficiency
-                        radius = 3  # Mask radius in output pixels
-                        for i in range(0, len(pos_x), max(1, len(pos_x) // 100)):
+                        # Use all positions in the time window
+                        # Smaller radius (2 pixels) for tighter masks matching actual satellite size
+                        radius = 2  # Mask radius in output pixels
+                        for i in range(len(pos_x)):
                             x = int(pos_x[i] * scale_x)
                             y = int(pos_y[i] * scale_y)
                             # Create circular mask around object
