@@ -1352,8 +1352,9 @@ class EBSSADataset(EventDataset):
                         pass
                     else:
                         # Use all positions in the time window
-                        # Smaller radius (2 pixels) for tighter masks matching actual satellite size
-                        radius = 2  # Mask radius in output pixels
+                        # Satellites generate events in a trail/streak as they move
+                        # Use larger radius to capture the full event generation area
+                        radius = 5  # Mask radius in output pixels
                         for i in range(len(pos_x)):
                             x = int(pos_x[i] * scale_x)
                             y = int(pos_y[i] * scale_y)
