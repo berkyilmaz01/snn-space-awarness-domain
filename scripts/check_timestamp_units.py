@@ -35,9 +35,9 @@ def main():
                 event_ts = td[0, 0]['ts'].flatten() if hasattr(td, 'shape') else None
 
             if event_ts is not None and len(event_ts) > 0:
-                event_ts = event_ts.flatten()
-                e_min = float(event_ts.min())
-                e_max = float(event_ts.max())
+                event_ts = np.asarray(event_ts).flatten()
+                e_min = event_ts.min().item() if hasattr(event_ts.min(), 'item') else float(event_ts.min())
+                e_max = event_ts.max().item() if hasattr(event_ts.max(), 'item') else float(event_ts.max())
                 print(f"\nEvent timestamps (TD.ts):")
                 print(f"  Count: {len(event_ts)}")
                 print(f"  Min: {e_min:,.0f}")
@@ -61,8 +61,8 @@ def main():
                     label_ts = np.asarray(label_ts).flatten()
 
                 if label_ts is not None and len(label_ts) > 0:
-                    l_min = float(label_ts.min())
-                    l_max = float(label_ts.max())
+                    l_min = label_ts.min().item() if hasattr(label_ts.min(), 'item') else float(label_ts.min())
+                    l_max = label_ts.max().item() if hasattr(label_ts.max(), 'item') else float(label_ts.max())
                     print(f"\nLabel timestamps (Obj.ts):")
                     print(f"  Count: {len(label_ts)}")
                     print(f"  Min: {l_min:,.0f}")
