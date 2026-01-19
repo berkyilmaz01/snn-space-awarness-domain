@@ -917,8 +917,8 @@ def main():
     parser.add_argument(
         '--spatial-tolerance',
         type=int,
-        default=1,
-        help='Spatial tolerance in pixels for TP (default: 1 per IGARSS 2023)'
+        default=5,
+        help='Spatial tolerance in pixels for TP (default: 5 to account for event-label offset)'
     )
     parser.add_argument(
         '--no-hulk',
