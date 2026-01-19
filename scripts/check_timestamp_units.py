@@ -34,13 +34,17 @@ def main():
             else:
                 event_ts = td[0, 0]['ts'].flatten() if hasattr(td, 'shape') else None
 
-            if event_ts is not None:
+            if event_ts is not None and len(event_ts) > 0:
+                event_ts = event_ts.flatten()
+                e_min = float(event_ts.min())
+                e_max = float(event_ts.max())
                 print(f"\nEvent timestamps (TD.ts):")
-                print(f"  Min: {event_ts.min():,.0f}")
-                print(f"  Max: {event_ts.max():,.0f}")
-                print(f"  Duration: {(event_ts.max() - event_ts.min()):,.0f}")
-                print(f"  Duration (seconds, if microsec): {(event_ts.max() - event_ts.min()) / 1e6:.2f}s")
-                print(f"  Duration (seconds, if millisec): {(event_ts.max() - event_ts.min()) / 1e3:.2f}s")
+                print(f"  Count: {len(event_ts)}")
+                print(f"  Min: {e_min:,.0f}")
+                print(f"  Max: {e_max:,.0f}")
+                print(f"  Duration: {(e_max - e_min):,.0f}")
+                print(f"  Duration (seconds, if microsec): {(e_max - e_min) / 1e6:.2f}s")
+                print(f"  Duration (seconds, if millisec): {(e_max - e_min) / 1e3:.2f}s")
 
         # Label timestamps
         if 'Obj' in mat:
@@ -57,26 +61,30 @@ def main():
                     label_ts = np.asarray(label_ts).flatten()
 
                 if label_ts is not None and len(label_ts) > 0:
+                    l_min = float(label_ts.min())
+                    l_max = float(label_ts.max())
                     print(f"\nLabel timestamps (Obj.ts):")
                     print(f"  Count: {len(label_ts)}")
-                    print(f"  Min: {label_ts.min():,.0f}")
-                    print(f"  Max: {label_ts.max():,.0f}")
-                    print(f"  Duration: {(label_ts.max() - label_ts.min()):,.0f}")
-                    print(f"  Duration (seconds, if microsec): {(label_ts.max() - label_ts.min()) / 1e6:.2f}s")
-                    print(f"  Duration (seconds, if millisec): {(label_ts.max() - label_ts.min()) / 1e3:.2f}s")
+                    print(f"  Min: {l_min:,.0f}")
+                    print(f"  Max: {l_max:,.0f}")
+                    print(f"  Duration: {(l_max - l_min):,.0f}")
+                    print(f"  Duration (seconds, if microsec): {(l_max - l_min) / 1e6:.2f}s")
+                    print(f"  Duration (seconds, if millisec): {(l_max - l_min) / 1e3:.2f}s")
 
                     # Compare ranges
-                    if event_ts is not None:
+                    if event_ts is not None and len(event_ts) > 0:
                         print(f"\nTimestamp comparison:")
-                        print(f"  Event range: [{event_ts.min():,.0f}, {event_ts.max():,.0f}]")
-                        print(f"  Label range: [{label_ts.min():,.0f}, {label_ts.max():,.0f}]")
+                        print(f"  Event range: [{e_min:,.0f}, {e_max:,.0f}]")
+                        print(f"  Label range: [{l_min:,.0f}, {l_max:,.0f}]")
 
                         # Check if they overlap
-                        overlap = (label_ts.min() <= event_ts.max()) and (label_ts.max() >= event_ts.min())
+                        overlap = (l_min <= e_max) and (l_max >= e_min)
                         print(f"  Ranges overlap: {overlap}")
 
                         if not overlap:
-                            ratio = event_ts.mean() / label_ts.mean() if label_ts.mean() != 0 else 0
+                            l_mean = float(label_ts.mean())
+                            e_mean = float(event_ts.mean())
+                            ratio = e_mean / l_mean if l_mean != 0 else 0
                             print(f"  Event/Label ratio: {ratio:.2f}x (if ~1000, labels may be in ms)")
 
 if __name__ == "__main__":
