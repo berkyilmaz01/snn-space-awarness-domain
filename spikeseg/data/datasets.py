@@ -1226,11 +1226,27 @@ class EBSSADataset(EventDataset):
         # EBSSA format: Obj contains object trajectories
         if 'Obj' in labels:
             obj = labels['Obj']
+
+            # Helper to unwrap nested 0-d object arrays from MATLAB
+            def unwrap_field(field):
+                """Extract data from potentially nested 0-d object arrays."""
+                if field is None:
+                    return None
+                # If it's a 0-d object array, unwrap with .item()
+                if hasattr(field, 'shape') and field.shape == () and hasattr(field, 'dtype') and field.dtype == object:
+                    inner = field.item()
+                    # Recursively unwrap if still nested
+                    return unwrap_field(inner)
+                # If it's an array, flatten it
+                if hasattr(field, 'flatten'):
+                    return field.flatten()
+                return field
+
             # Handle numpy structured array
             if hasattr(obj, 'dtype') and obj.dtype.names:
-                obj_x = obj['x'].flatten() if 'x' in obj.dtype.names else None
-                obj_y = obj['y'].flatten() if 'y' in obj.dtype.names else None
-                obj_ts = obj['ts'].flatten() if 'ts' in obj.dtype.names else None
+                obj_x = unwrap_field(obj['x']) if 'x' in obj.dtype.names else None
+                obj_y = unwrap_field(obj['y']) if 'y' in obj.dtype.names else None
+                obj_ts = unwrap_field(obj['ts']) if 'ts' in obj.dtype.names else None
             elif isinstance(obj, tuple):
                 # Tuple format: (x, y, id, ts, nObj)
                 obj_x, obj_y = obj[0], obj[1]
