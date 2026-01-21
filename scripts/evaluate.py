@@ -602,8 +602,16 @@ def load_model(
         n_classes = 1  # Default to 1 (detection mode per IGARSS 2023)
         logger.info(f"Using default n_classes={n_classes}")
 
+    # Get input_channels from checkpoint config
+    try:
+        input_channels = checkpoint['config']['data']['input_channels']
+        logger.info(f"Loaded input_channels={input_channels} from checkpoint config")
+    except (KeyError, TypeError):
+        input_channels = 2  # Default to 2 (ON/OFF polarity)
+        logger.info(f"Using default input_channels={input_channels}")
+
     enc_config = EncoderConfig(
-        input_channels=2,
+        input_channels=input_channels,
         conv1=LayerConfig(out_channels=4, kernel_size=5, threshold=thresholds[0], leak=leaks[0]),
         conv2=LayerConfig(out_channels=36, kernel_size=5, threshold=thresholds[1], leak=leaks[1]),
         conv3=LayerConfig(out_channels=n_classes, kernel_size=7, threshold=thresholds[2], leak=leaks[2]),
