@@ -588,10 +588,17 @@ def load_model(
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Extract config from checkpoint or use defaults
-    # Use IGARSS 2023 defaults with proper LayerConfig structure
+    # Extract config from checkpoint or use IGARSS 2023 defaults
+    # Default values match config.yaml and IGARSS 2023 paper
     default_thresholds = [0.1, 0.1, 0.1]
     default_leaks = [0.09, 0.01, 0.0]
+    default_kernel_sizes = [5, 5, 7]
+    default_conv1_channels = 4
+    default_conv2_channels = 36
+    default_pool1_kernel = 2
+    default_pool1_stride = 2
+    default_pool2_kernel = 2
+    default_pool2_stride = 2
 
     # Get model parameters from checkpoint config
     try:
@@ -599,12 +606,27 @@ def load_model(
         n_classes = model_cfg.get('n_classes', 1)
         thresholds = list(model_cfg.get('thresholds', default_thresholds))
         leaks = list(model_cfg.get('leaks', default_leaks))
+        kernel_sizes = list(model_cfg.get('kernel_sizes', default_kernel_sizes))
+        conv1_channels = model_cfg.get('conv1_channels', default_conv1_channels)
+        conv2_channels = model_cfg.get('conv2_channels', default_conv2_channels)
+        pool1_kernel = model_cfg.get('pool1_kernel', default_pool1_kernel)
+        pool1_stride = model_cfg.get('pool1_stride', default_pool1_stride)
+        pool2_kernel = model_cfg.get('pool2_kernel', default_pool2_kernel)
+        pool2_stride = model_cfg.get('pool2_stride', default_pool2_stride)
         logger.info(f"Loaded model config from checkpoint: n_classes={n_classes}, "
-                   f"thresholds={thresholds}, leaks={leaks}")
+                   f"thresholds={thresholds}, leaks={leaks}, "
+                   f"channels=[{conv1_channels}, {conv2_channels}], kernels={kernel_sizes}")
     except (KeyError, TypeError):
         n_classes = 1  # Default to 1 (detection mode per IGARSS 2023)
         thresholds = default_thresholds
         leaks = default_leaks
+        kernel_sizes = default_kernel_sizes
+        conv1_channels = default_conv1_channels
+        conv2_channels = default_conv2_channels
+        pool1_kernel = default_pool1_kernel
+        pool1_stride = default_pool1_stride
+        pool2_kernel = default_pool2_kernel
+        pool2_stride = default_pool2_stride
         logger.info(f"Using default model config: n_classes={n_classes}")
 
     # Get input_channels from checkpoint config
@@ -617,14 +639,13 @@ def load_model(
 
     enc_config = EncoderConfig(
         input_channels=input_channels,
-        conv1=LayerConfig(out_channels=4, kernel_size=5, threshold=thresholds[0], leak=leaks[0]),
-        conv2=LayerConfig(out_channels=36, kernel_size=5, threshold=thresholds[1], leak=leaks[1]),
-        conv3=LayerConfig(out_channels=n_classes, kernel_size=7, threshold=thresholds[2], leak=leaks[2]),
-        # IGARSS 2023: 2x2 pooling (not Kheradpisheh's 7x7 stride 6)
-        pool1_kernel_size=2,
-        pool1_stride=2,
-        pool2_kernel_size=2,
-        pool2_stride=2,
+        conv1=LayerConfig(out_channels=conv1_channels, kernel_size=kernel_sizes[0], threshold=thresholds[0], leak=leaks[0]),
+        conv2=LayerConfig(out_channels=conv2_channels, kernel_size=kernel_sizes[1], threshold=thresholds[1], leak=leaks[1]),
+        conv3=LayerConfig(out_channels=n_classes, kernel_size=kernel_sizes[2], threshold=thresholds[2], leak=leaks[2]),
+        pool1_kernel_size=pool1_kernel,
+        pool1_stride=pool1_stride,
+        pool2_kernel_size=pool2_kernel,
+        pool2_stride=pool2_stride,
     )
 
     model = SpikeSEGEncoder(enc_config)
@@ -647,14 +668,12 @@ def load_model(
 
     model.load_state_dict(filtered_state_dict, strict=False)
 
-    # IGARSS 2023 paper leak values (percentage of threshold):
-    # - Layer 1: 90% leak (short-term memory for fast objects)
-    # - Layer 2: 10% leak (long-term memory for slow objects)
-    # - Layer 3: 0% leak (classification)
-    # These temporal dynamics are CRITICAL for detecting both fast and slow objects
-    model.conv1.neuron.leak.data.fill_(0.09)  # 90% of threshold=0.1
-    model.conv2.neuron.leak.data.fill_(0.01)  # 10% of threshold=0.1
-    model.conv3.neuron.leak.data.fill_(0.0)   # No leak for classification
+    # Note: The model is already correctly initialized with leak values from the config.
+    # LayerConfig.leak contains absolute leak values (e.g., 0.09 for 90% of threshold=0.1)
+    # SpikingEncoderLayer converts to leak_factor = leak/threshold, then LIFNeuron
+    # converts back to leak = leak_factor * threshold, so the neuron.leak buffer
+    # is already set to the correct absolute leak value.
+    # No need to overwrite - the model respects the checkpoint config.
 
     model.to(device)
     model.eval()
