@@ -434,69 +434,11 @@ def visualize_3d_trajectory(
 
     pred_x, pred_y, pred_t = pred_raw_x, pred_raw_y, pred_raw_t
 
-    # Extract GROUND TRUTH - prefer actual trajectory data
+    # Extract GROUND TRUTH from label mask (shows only the target satellite, not all objects)
     gt_x, gt_y, gt_t = [], [], []
 
-    if trajectory is not None and 'x' in trajectory and 'y' in trajectory:
-        # Helper to extract flat numeric array from MATLAB data
-        def extract_array(arr):
-            if arr is None:
-                return None
-            arr = np.asarray(arr)
-            # Handle nested object arrays
-            if arr.dtype == object:
-                flat = []
-                for item in arr.flatten():
-                    if hasattr(item, '__iter__') and not isinstance(item, str):
-                        flat.extend(np.asarray(item).flatten().tolist())
-                    else:
-                        flat.append(float(item))
-                return np.array(flat, dtype=float)
-            return arr.flatten().astype(float)
-
-        try:
-            traj_x = extract_array(trajectory['x'])
-            traj_y = extract_array(trajectory['y'])
-
-            if traj_x is None or traj_y is None or len(traj_x) == 0:
-                raise ValueError("Empty trajectory")
-
-            # Get timestamps
-            traj_t_data = trajectory.get('t')
-            if traj_t_data is not None:
-                traj_t = extract_array(traj_t_data)
-            else:
-                traj_t = None
-
-            # Scale coordinates to output space (128x128)
-            scale_x_traj = (W_input - 1) / 240  # EBSSA sensor width
-            scale_y_traj = (H_input - 1) / 180  # EBSSA sensor height
-
-            traj_x_scaled = traj_x * scale_x_traj
-            traj_y_scaled = traj_y * scale_y_traj
-
-            # Keep ALL trajectory points (don't filter to single satellite)
-            # This allows showing detections on multiple satellites if detected
-
-            # Normalize time to [0, T_input] range
-            if traj_t is not None and len(traj_t) > 0:
-                t_min, t_max = float(traj_t.min()), float(traj_t.max())
-                if t_max > t_min:
-                    traj_t_norm = (traj_t - t_min) / (t_max - t_min) * (T_input - 1)
-                else:
-                    traj_t_norm = np.linspace(0, T_input - 1, len(traj_x_scaled))
-            else:
-                traj_t_norm = np.linspace(0, T_input - 1, len(traj_x_scaled))
-
-            gt_x = list(traj_x_scaled)
-            gt_y = list(traj_y_scaled)
-            gt_t = list(traj_t_norm)
-        except Exception as e:
-            print(f"Warning: Could not parse trajectory: {e}")
-            # Fall back to label-based GT below
-
-    if not gt_x and label is not None:
-        # Fallback: use events filtered by label
+    if label is not None:
+        # Use label mask - this shows only the satellite the network was trained to detect
         label_np = label.cpu().numpy() if isinstance(label, torch.Tensor) else label
         if label_np.ndim == 2:
             for t in range(T_input):
