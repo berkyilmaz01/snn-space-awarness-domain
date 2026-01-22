@@ -372,27 +372,36 @@ def visualize_3d_trajectory(
     events: torch.Tensor,
     predictions: torch.Tensor,
     label: Optional[torch.Tensor] = None,
+    trajectory: Optional[dict] = None,
     output_path: Optional[str] = None,
     title: str = "Satellite Detection"
 ):
     """
-    3D visualization exactly like the IGARSS paper: X, Y, Time axes.
+    3D visualization exactly like the IGARSS paper Figure 4.
 
     Paper style:
     - Black background
-    - Ground Truth: cyan dots
-    - Network Output: red + markers
-    - Time axis vertical, X/Y horizontal
+    - Ground Truth: blue dots (from actual Obj trajectory)
+    - Network Output: red stars
+    - Axes: X, Time, Y
+
+    Args:
+        events: Input events tensor
+        predictions: Model output spikes
+        label: Ground truth mask (fallback if no trajectory)
+        trajectory: Dict with 'x', 'y', 't' arrays (actual object trajectory)
+        output_path: Path to save figure
+        title: Figure title
     """
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d import Axes3D
 
     # Get input events
     events_np = events.cpu().numpy() if isinstance(events, torch.Tensor) else events
-    if events_np.ndim == 5:  # (T, B, C, H, W)
+    if events_np.ndim == 5:
         events_np = events_np[:, 0, :, :, :]
-    if events_np.ndim == 4:  # (T, C, H, W)
-        events_np = events_np.sum(axis=1)  # -> (T, H, W)
+    if events_np.ndim == 4:
+        events_np = events_np.sum(axis=1)
 
     T_input, H_input, W_input = events_np.shape
 
@@ -401,14 +410,14 @@ def visualize_3d_trajectory(
     if pred_np.ndim == 5:
         pred_np = pred_np[:, 0, :, :, :]
     if pred_np.ndim == 4:
-        pred_np = pred_np.sum(axis=1)  # -> (T, H, W)
+        pred_np = pred_np.sum(axis=1)
 
     T_pred, H_pred, W_pred = pred_np.shape
 
     # Scale and offset for predictions
     scale_y = H_input / H_pred
     scale_x = W_input / W_pred
-    offset = 12  # Convolution receptive field offset
+    offset = 12
 
     # Extract PREDICTION coordinates (Network Output)
     pred_x, pred_y, pred_t = [], [], []
@@ -419,9 +428,36 @@ def visualize_3d_trajectory(
             pred_y.append(y * scale_y + offset)
             pred_t.append(t)
 
-    # Extract GROUND TRUTH from events filtered by label
+    # Extract GROUND TRUTH - prefer actual trajectory data
     gt_x, gt_y, gt_t = [], [], []
-    if label is not None:
+
+    if trajectory is not None and 'x' in trajectory and 'y' in trajectory:
+        # Use actual object trajectory from EBSSA data
+        traj_x = np.asarray(trajectory['x']).flatten()
+        traj_y = np.asarray(trajectory['y']).flatten()
+
+        # Normalize time to [0, T_input] range
+        if 't' in trajectory and len(trajectory['t']) > 0:
+            traj_t = np.asarray(trajectory['t']).flatten()
+            t_min, t_max = traj_t.min(), traj_t.max()
+            if t_max > t_min:
+                traj_t_norm = (traj_t - t_min) / (t_max - t_min) * (T_input - 1)
+            else:
+                traj_t_norm = np.zeros_like(traj_t)
+        else:
+            # Linear time assumption
+            traj_t_norm = np.linspace(0, T_input - 1, len(traj_x))
+
+        # Scale coordinates to output space (128x128)
+        scale_x_traj = (W_input - 1) / 240  # EBSSA sensor width
+        scale_y_traj = (H_input - 1) / 180  # EBSSA sensor height
+
+        gt_x = list(traj_x * scale_x_traj)
+        gt_y = list(traj_y * scale_y_traj)
+        gt_t = list(traj_t_norm)
+
+    elif label is not None:
+        # Fallback: use events filtered by label
         label_np = label.cpu().numpy() if isinstance(label, torch.Tensor) else label
         if label_np.ndim == 2:
             for t in range(T_input):
@@ -440,15 +476,15 @@ def visualize_3d_trajectory(
 
     # Plot Ground Truth (blue dots) - paper style
     if gt_x:
-        ax.scatter(gt_x, gt_t, gt_y, c='blue', marker='o', s=15, alpha=0.8,
+        ax.scatter(gt_x, gt_t, gt_y, c='blue', marker='o', s=20, alpha=0.8,
                    label='Ground Truth', depthshade=False)
 
     # Plot Network Output (red stars) - paper style
     if pred_x:
-        ax.scatter(pred_x, pred_t, pred_y, c='red', marker='*', s=60,
+        ax.scatter(pred_x, pred_t, pred_y, c='red', marker='*', s=80,
                    alpha=0.9, label='Network Output', depthshade=False)
 
-    # Axis labels (paper style: X, Time, Y)
+    # Axis labels
     ax.set_xlabel('X (pixels)', fontsize=14, color='white', labelpad=10)
     ax.set_ylabel('Time (steps)', fontsize=14, color='white', labelpad=10)
     ax.set_zlabel('Y (pixels)', fontsize=14, color='white', labelpad=10)
@@ -459,7 +495,7 @@ def visualize_3d_trajectory(
     ax.set_zlim(0, H_input)
 
     # Viewing angle (similar to paper)
-    ax.view_init(elev=15, azim=45)
+    ax.view_init(elev=20, azim=-60)
 
     # Legend
     ax.legend(loc='upper left', fontsize=12, facecolor='black', edgecolor='white')
@@ -483,7 +519,7 @@ def visualize_3d_trajectory(
         plt.show()
 
     plt.close()
-    plt.style.use('default')  # Reset style
+    plt.style.use('default')
 
     return fig
 
@@ -558,8 +594,26 @@ def main():
                 )
 
             if args.visualize_3d and i < 10:  # 3D paper-style visualization
+                # Try to get actual trajectory from dataset
+                trajectory = None
+                try:
+                    import scipy.io as sio
+                    rec = dataset.recordings[i]
+                    mat = sio.loadmat(rec['event_path'], squeeze_me=True)
+                    if 'Obj' in mat:
+                        obj = mat['Obj']
+                        if hasattr(obj, 'dtype') and obj.dtype.names:
+                            trajectory = {
+                                'x': np.asarray(obj['x']).flatten() if 'x' in obj.dtype.names else None,
+                                'y': np.asarray(obj['y']).flatten() if 'y' in obj.dtype.names else None,
+                                't': np.asarray(obj['ts']).flatten() if 'ts' in obj.dtype.names else None
+                            }
+                except Exception as e:
+                    print(f"Warning: Could not load trajectory: {e}")
+
                 visualize_3d_trajectory(
                     x, raw_spikes, label,
+                    trajectory=trajectory,
                     output_path=f'trajectory_3d_{i:03d}.png',
                     title=f'Sample {i}: Satellite Trajectory'
                 )
