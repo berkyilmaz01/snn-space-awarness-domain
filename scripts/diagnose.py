@@ -22,22 +22,35 @@ def load_model(checkpoint_path: str, device: torch.device):
     n_classes = model_cfg.get('n_classes', 1)
     thresholds = model_cfg.get('thresholds', [0.1, 0.1, 0.1])
     leaks = model_cfg.get('leaks', [0.09, 0.01, 0.0])
-    channels = model_cfg.get('channels', [4, 36])
+    conv1_channels = model_cfg.get('conv1_channels', 4)
+    conv2_channels = model_cfg.get('conv2_channels', 36)
     kernels = model_cfg.get('kernel_sizes', [5, 5, 7])
     input_channels = config_dict.get('data', {}).get('input_channels', 2)
 
-    layer_configs = [
-        LayerConfig(in_channels=input_channels, out_channels=channels[0], kernel_size=kernels[0],
-                   threshold=thresholds[0], leak=leaks[0], pool_size=2, pool_stride=2, use_dog_init=True),
-        LayerConfig(in_channels=channels[0], out_channels=channels[1], kernel_size=kernels[1],
-                   threshold=thresholds[1], leak=leaks[1], pool_size=2, pool_stride=2),
-        LayerConfig(in_channels=channels[1], out_channels=n_classes, kernel_size=kernels[2],
-                   threshold=thresholds[2], leak=leaks[2], pool_size=1, pool_stride=1),
-    ]
+    enc_config = EncoderConfig(
+        input_channels=input_channels,
+        conv1=LayerConfig(out_channels=conv1_channels, kernel_size=kernels[0], threshold=thresholds[0], leak=leaks[0]),
+        conv2=LayerConfig(out_channels=conv2_channels, kernel_size=kernels[1], threshold=thresholds[1], leak=leaks[1]),
+        conv3=LayerConfig(out_channels=n_classes, kernel_size=kernels[2], threshold=thresholds[2], leak=leaks[2]),
+    )
 
-    encoder_config = EncoderConfig(layers=layer_configs, n_classes=n_classes)
-    model = SpikeSEGEncoder(encoder_config).to(device)
-    model.load_state_dict(ckpt['model_state_dict'])
+    model = SpikeSEGEncoder(enc_config).to(device)
+
+    # Handle state dict with 'encoder.' prefix from training
+    state_dict = ckpt['model_state_dict']
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith('encoder.'):
+            new_key = key[len('encoder.'):]
+            new_state_dict[new_key] = value
+        else:
+            new_state_dict[key] = value
+
+    # Filter to only include model parameters
+    param_keys = set(model.state_dict().keys())
+    filtered_state_dict = {k: v for k, v in new_state_dict.items() if k in param_keys}
+
+    model.load_state_dict(filtered_state_dict, strict=False)
     model.eval()
 
     return model
