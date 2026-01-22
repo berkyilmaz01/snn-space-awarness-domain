@@ -565,12 +565,14 @@ def visualize_3d_trajectory(
     # Plot Ground Truth (blue dots) - paper style
     if gt_x:
         ax.scatter(gt_x, gt_t, gt_y, c='blue', marker='o', s=20, alpha=0.8,
-                   label='Ground Truth', depthshade=False)
+                   label='Ground Truth', depthshade=False, zorder=1)
 
     # Plot Network Output (red stars) - along trajectory at detection times
+    # Add small Y offset (+2) to render above blue dots
     if pred_x:
-        ax.scatter(pred_x, pred_t, pred_y, c='red', marker='*', s=100,
-                   alpha=0.9, label='Network Output', depthshade=False)
+        pred_y_offset = [y + 2 for y in pred_y]  # Slight offset to appear on top
+        ax.scatter(pred_x, pred_t, pred_y_offset, c='red', marker='*', s=150,
+                   alpha=1.0, label='Network Output', depthshade=False, zorder=10)
 
     # Axis labels
     ax.set_xlabel('X (pixels)', fontsize=14, color='white', labelpad=10)
