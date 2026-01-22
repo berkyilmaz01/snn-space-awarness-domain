@@ -86,10 +86,10 @@ def create_fold_splits(recordings: List[str], n_folds: int, test_ratio: float = 
     shuffled = recordings.copy()
     rng.shuffle(shuffled)
 
-    # Hold out test set
-    n_test = max(1, int(len(shuffled) * test_ratio))
-    test_set = shuffled[:n_test]
-    train_val_set = shuffled[n_test:]
+    # Hold out test set (0 if test_ratio=0)
+    n_test = int(len(shuffled) * test_ratio) if test_ratio > 0 else 0
+    test_set = shuffled[:n_test] if n_test > 0 else []
+    train_val_set = shuffled[n_test:] if n_test > 0 else shuffled
 
     # Create k folds
     n = len(train_val_set)
