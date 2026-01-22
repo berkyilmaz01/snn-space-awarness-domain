@@ -162,7 +162,7 @@ class SpikingConv2d(nn.Module):
         leak_mode: LeakMode = "subtractive",
         learnable: bool = True,
         weight_init_mean: float = 0.8,
-        weight_init_std: float = 0.05,
+        weight_init_std: float = 0.01,
     ) -> None:
         """
         Initialize SpikingConv2d layer.
