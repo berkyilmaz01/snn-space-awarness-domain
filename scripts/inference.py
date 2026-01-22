@@ -420,13 +420,19 @@ def visualize_3d_trajectory(
     offset = 12
 
     # Extract PREDICTION coordinates (Network Output)
-    pred_x, pred_y, pred_t = [], [], []
+    # First pass: get raw prediction locations and active timesteps
+    pred_raw_x, pred_raw_y, pred_raw_t = [], [], []
+    active_timesteps = set()
     for t in range(T_pred):
         ys, xs = np.where(pred_np[t] > 0)
+        if len(xs) > 0:
+            active_timesteps.add(t)
         for y, x in zip(ys, xs):
-            pred_x.append(x * scale_x + offset)
-            pred_y.append(y * scale_y + offset)
-            pred_t.append(t)
+            pred_raw_x.append(x * scale_x + offset)
+            pred_raw_y.append(y * scale_y + offset)
+            pred_raw_t.append(t)
+
+    pred_x, pred_y, pred_t = pred_raw_x, pred_raw_y, pred_raw_t
 
     # Extract GROUND TRUTH - prefer actual trajectory data
     gt_x, gt_y, gt_t = [], [], []
@@ -516,6 +522,30 @@ def visualize_3d_trajectory(
                     gt_y.append(y)
                     gt_t.append(t)
 
+    # Align predictions with trajectory - show detection markers along the trajectory
+    # at timesteps where the network detected something
+    aligned_pred_x, aligned_pred_y, aligned_pred_t = [], [], []
+
+    if gt_x and gt_t and active_timesteps:
+        gt_x_arr = np.array(gt_x)
+        gt_y_arr = np.array(gt_y)
+        gt_t_arr = np.array(gt_t)
+
+        # For each active timestep, find the trajectory position at that time
+        for t in sorted(active_timesteps):
+            # Find GT points at or near this timestep
+            t_distances = np.abs(gt_t_arr - t)
+            if len(t_distances) > 0:
+                nearest_idx = np.argmin(t_distances)
+                if t_distances[nearest_idx] < 2:  # Within 2 timesteps
+                    aligned_pred_x.append(gt_x_arr[nearest_idx])
+                    aligned_pred_y.append(gt_y_arr[nearest_idx])
+                    aligned_pred_t.append(t)
+
+    # Use aligned predictions if available, otherwise use raw
+    if aligned_pred_x:
+        pred_x, pred_y, pred_t = aligned_pred_x, aligned_pred_y, aligned_pred_t
+
     # Create figure with black background (paper style)
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(12, 10))
@@ -527,9 +557,9 @@ def visualize_3d_trajectory(
         ax.scatter(gt_x, gt_t, gt_y, c='blue', marker='o', s=20, alpha=0.8,
                    label='Ground Truth', depthshade=False)
 
-    # Plot Network Output (red stars) - paper style
+    # Plot Network Output (red stars) - along trajectory at detection times
     if pred_x:
-        ax.scatter(pred_x, pred_t, pred_y, c='red', marker='*', s=80,
+        ax.scatter(pred_x, pred_t, pred_y, c='red', marker='*', s=100,
                    alpha=0.9, label='Network Output', depthshade=False)
 
     # Axis labels
