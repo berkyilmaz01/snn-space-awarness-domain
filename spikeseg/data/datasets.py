@@ -274,7 +274,8 @@ def events_to_voxel_grid(
     if t_max > t_min:
         t_norm = (t - t_min) / (t_max - t_min) * (n_timesteps - 1e-6)
     else:
-        t_norm = np.zeros_like(t)
+        # All events at same timestamp - put in middle timestep for better temporal context
+        t_norm = np.full_like(t, n_timesteps // 2, dtype=np.float64)
     
     t_idx = t_norm.astype(np.int32)
     t_idx = np.clip(t_idx, 0, n_timesteps - 1)
