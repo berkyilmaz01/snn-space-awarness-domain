@@ -180,7 +180,7 @@ def run_evaluation(checkpoint_path: Path, data_root: str, recordings_file: Path,
 def main():
     parser = argparse.ArgumentParser(description='SpikeSEG K-Fold Cross-Validation')
     parser.add_argument('--config', '-c', default='configs/config.yaml', help='Config file')
-    parser.add_argument('--data-root', '-d', default='../ebssa-data-utah/ebssa', help='Data root')
+    parser.add_argument('--data-root', '-d', default=None, help='Data root (default: from config)')
     parser.add_argument('--n-folds', '-k', type=int, default=10, help='Number of folds')
     parser.add_argument('--test-ratio', type=float, default=0.1, help='Test set ratio')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
@@ -189,11 +189,19 @@ def main():
     parser.add_argument('--eval-only', action='store_true', help='Only run evaluation on existing folds')
     args = parser.parse_args()
 
+    # Load config to get data_root if not specified
+    import yaml
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+
+    if args.data_root is None:
+        args.data_root = config.get('data', {}).get('data_root', '../ebssa-data-utah/ebssa')
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Get valid recordings
-    print("Finding valid recordings...")
+    print(f"Finding valid recordings in {args.data_root}...")
     recordings = get_valid_recordings(args.data_root)
     print(f"Found {len(recordings)} valid recordings")
 
