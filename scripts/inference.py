@@ -455,27 +455,50 @@ def visualize_3d_trajectory(
             if traj_x is None or traj_y is None or len(traj_x) == 0:
                 raise ValueError("Empty trajectory")
 
-            # Normalize time to [0, T_input] range
+            # Get timestamps
             traj_t_data = trajectory.get('t')
             if traj_t_data is not None:
                 traj_t = extract_array(traj_t_data)
-                if traj_t is not None and len(traj_t) > 0:
-                    t_min, t_max = float(traj_t.min()), float(traj_t.max())
-                    if t_max > t_min:
-                        traj_t_norm = (traj_t - t_min) / (t_max - t_min) * (T_input - 1)
-                    else:
-                        traj_t_norm = np.linspace(0, T_input - 1, len(traj_x))
-                else:
-                    traj_t_norm = np.linspace(0, T_input - 1, len(traj_x))
             else:
-                traj_t_norm = np.linspace(0, T_input - 1, len(traj_x))
+                traj_t = None
 
             # Scale coordinates to output space (128x128)
             scale_x_traj = (W_input - 1) / 240  # EBSSA sensor width
             scale_y_traj = (H_input - 1) / 180  # EBSSA sensor height
 
-            gt_x = list(traj_x * scale_x_traj)
-            gt_y = list(traj_y * scale_y_traj)
+            traj_x_scaled = traj_x * scale_x_traj
+            traj_y_scaled = traj_y * scale_y_traj
+
+            # Find the trajectory that overlaps with the network output
+            # (the model was trained on one filtered satellite)
+            if pred_x and len(pred_x) > 0:
+                pred_center_x = np.mean(pred_x)
+                pred_center_y = np.mean(pred_y)
+
+                # Find trajectory points near the prediction center
+                distances = np.sqrt((traj_x_scaled - pred_center_x)**2 +
+                                   (traj_y_scaled - pred_center_y)**2)
+                # Keep only points within 40 pixels of prediction
+                mask = distances < 40
+
+                if np.any(mask):
+                    traj_x_scaled = traj_x_scaled[mask]
+                    traj_y_scaled = traj_y_scaled[mask]
+                    if traj_t is not None:
+                        traj_t = traj_t[mask]
+
+            # Normalize time to [0, T_input] range
+            if traj_t is not None and len(traj_t) > 0:
+                t_min, t_max = float(traj_t.min()), float(traj_t.max())
+                if t_max > t_min:
+                    traj_t_norm = (traj_t - t_min) / (t_max - t_min) * (T_input - 1)
+                else:
+                    traj_t_norm = np.linspace(0, T_input - 1, len(traj_x_scaled))
+            else:
+                traj_t_norm = np.linspace(0, T_input - 1, len(traj_x_scaled))
+
+            gt_x = list(traj_x_scaled)
+            gt_y = list(traj_y_scaled)
             gt_t = list(traj_t_norm)
         except Exception as e:
             print(f"Warning: Could not parse trajectory: {e}")
