@@ -89,22 +89,43 @@ def dilate_mask(mask: torch.Tensor, pixels: int = 1) -> torch.Tensor:
     return dilated
 
 
-def extract_gt_centroids(label: torch.Tensor) -> List[Tuple[float, float]]:
+def extract_gt_centroids(label: torch.Tensor, use_all_points: bool = True) -> List[Tuple[float, float]]:
     """
-    Extract ground truth object centroids from a label mask.
+    Extract ground truth object positions from a label mask.
 
-    Uses connected component analysis to find individual objects
-    and computes their centroids.
+    For satellite detection, the label mask often forms a trail/streak.
+    Using a single centroid (center of trail) is WRONG because detections
+    may be at one end of the trail, far from the center.
 
     Args:
         label: Binary label mask (H, W)
+        use_all_points: If True, return all nonzero pixel locations (for trail matching).
+                       If False, return connected component centroids (legacy behavior).
 
     Returns:
-        List of (x, y) centroid coordinates
+        List of (x, y) coordinates. If use_all_points=True, returns sampled points
+        along the trail. If False, returns centroids of connected components.
     """
     label_np = label.cpu().numpy().astype(np.uint8)
 
-    # Find connected components
+    if use_all_points:
+        # Return sampled points along the trail (not centroid)
+        # This allows matching detections anywhere along the satellite trajectory
+        coords = np.where(label_np > 0)
+        if len(coords[0]) == 0:
+            return []
+
+        # Sample points to avoid returning thousands of pixels
+        # Use every 10th pixel to get trajectory points
+        n_points = len(coords[0])
+        if n_points > 20:
+            step = max(1, n_points // 20)
+            indices = np.arange(0, n_points, step)
+            return [(coords[1][i], coords[0][i]) for i in indices]  # (x, y) format
+        else:
+            return [(coords[1][i], coords[0][i]) for i in range(n_points)]
+
+    # Legacy: connected component centroids
     labeled_array, num_features = ndimage.label(label_np)
 
     centroids = []
@@ -159,8 +180,9 @@ def extract_detection_centroids(objects: List[Object]) -> List[Tuple[float, floa
 
 def compute_object_metrics(
     detection_centroids: List[Tuple[float, float]],
-    gt_centroids: List[Tuple[float, float]],
-    tolerance: float = 1.0
+    gt_points: List[Tuple[float, float]],
+    tolerance: float = 1.0,
+    trajectory_mode: bool = True
 ) -> Dict[str, int]:
     """
     Compute object-level detection metrics using centroid matching.
@@ -169,53 +191,89 @@ def compute_object_metrics(
     "A correct prediction was determined if the centroid of the detection
     lands within 1 pixel of the centroid of the ground-truth"
 
+    IMPORTANT: For satellite detection, GT is often a trajectory (trail of points).
+    In trajectory_mode, we check if detection is near ANY point on the trajectory,
+    and count ONE TP per trajectory if any detection matches.
+
     Args:
         detection_centroids: List of (x, y) from detected objects
-        gt_centroids: List of (x, y) from ground truth objects
+        gt_points: List of (x, y) from ground truth. In trajectory_mode, these
+                  are points along the satellite trajectory.
         tolerance: Maximum distance for a match (default 1 pixel)
+        trajectory_mode: If True, GT points are from ONE object's trajectory.
+                        A detection matching ANY point counts as 1 TP.
+                        If False, each GT point is a separate object.
 
     Returns:
         Dictionary with tp, fp, fn counts
     """
     n_detections = len(detection_centroids)
-    n_gt = len(gt_centroids)
+    n_gt_points = len(gt_points)
 
-    if n_detections == 0 and n_gt == 0:
+    if n_detections == 0 and n_gt_points == 0:
         return {'tp': 0, 'fp': 0, 'fn': 0}
 
     if n_detections == 0:
-        return {'tp': 0, 'fp': 0, 'fn': n_gt}
+        # No detections, 1 FN (missed the trajectory/object)
+        return {'tp': 0, 'fp': 0, 'fn': 1 if trajectory_mode else n_gt_points}
 
-    if n_gt == 0:
+    if n_gt_points == 0:
+        # No GT, all detections are FP
         return {'tp': 0, 'fp': n_detections, 'fn': 0}
 
-    # Compute distance matrix between detections and GT
-    matched_gt = set()
-    matched_det = set()
+    if trajectory_mode:
+        # Trajectory mode: GT points are from ONE object (satellite trajectory)
+        # Check if ANY detection is within tolerance of ANY trajectory point
+        # This gives: 1 TP if matched, else 1 FN
+        # FP = detections that don't match any trajectory point
 
-    # Greedy matching: for each detection, find closest GT within tolerance
-    for det_idx, (dx, dy) in enumerate(detection_centroids):
-        best_dist = float('inf')
-        best_gt_idx = None
+        matched_det = set()
 
-        for gt_idx, (gx, gy) in enumerate(gt_centroids):
-            if gt_idx in matched_gt:
-                continue
+        for det_idx, (dx, dy) in enumerate(detection_centroids):
+            # Check if this detection is near any trajectory point
+            for (gx, gy) in gt_points:
+                dist = np.sqrt((dx - gx) ** 2 + (dy - gy) ** 2)
+                if dist <= tolerance:
+                    matched_det.add(det_idx)
+                    break  # Found a match, no need to check more GT points
 
-            dist = np.sqrt((dx - gx) ** 2 + (dy - gy) ** 2)
-            if dist <= tolerance and dist < best_dist:
-                best_dist = dist
-                best_gt_idx = gt_idx
+        # If any detection matched, it's 1 TP for the object
+        # If no detection matched, it's 1 FN
+        has_match = len(matched_det) > 0
+        tp = 1 if has_match else 0
+        fn = 0 if has_match else 1
+        fp = n_detections - len(matched_det)  # Detections that didn't match
 
-        if best_gt_idx is not None:
-            matched_gt.add(best_gt_idx)
-            matched_det.add(det_idx)
+        return {'tp': tp, 'fp': fp, 'fn': fn}
 
-    tp = len(matched_det)
-    fp = n_detections - tp
-    fn = n_gt - len(matched_gt)
+    else:
+        # Legacy mode: each GT point is a separate object
+        matched_gt = set()
+        matched_det = set()
 
-    return {'tp': tp, 'fp': fp, 'fn': fn}
+        # Greedy matching: for each detection, find closest GT within tolerance
+        for det_idx, (dx, dy) in enumerate(detection_centroids):
+            best_dist = float('inf')
+            best_gt_idx = None
+
+            for gt_idx, (gx, gy) in enumerate(gt_points):
+                if gt_idx in matched_gt:
+                    continue
+
+                dist = np.sqrt((dx - gx) ** 2 + (dy - gy) ** 2)
+                if dist <= tolerance and dist < best_dist:
+                    best_dist = dist
+                    best_gt_idx = gt_idx
+
+            if best_gt_idx is not None:
+                matched_gt.add(best_gt_idx)
+                matched_det.add(det_idx)
+
+        tp = len(matched_det)
+        fp = n_detections - tp
+        fn = n_gt_points - len(matched_gt)
+
+        return {'tp': tp, 'fp': fp, 'fn': fn}
 
 
 def compute_metrics(
@@ -530,30 +588,64 @@ def load_model(
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Extract config from checkpoint or use defaults
-    # Use IGARSS 2023 defaults with proper LayerConfig structure
-    thresholds = [0.1, 0.1, 0.1]
-    leaks = [0.09, 0.01, 0.0]
+    # Extract config from checkpoint or use IGARSS 2023 defaults
+    # Default values match config.yaml and IGARSS 2023 paper
+    default_thresholds = [0.1, 0.1, 0.1]
+    default_leaks = [0.09, 0.01, 0.0]
+    default_kernel_sizes = [5, 5, 7]
+    default_conv1_channels = 4
+    default_conv2_channels = 36
+    default_pool1_kernel = 2
+    default_pool1_stride = 2
+    default_pool2_kernel = 2
+    default_pool2_stride = 2
 
-    # Get n_classes from checkpoint config
-    # Config is saved at checkpoint['config']['model']['n_classes']
+    # Get model parameters from checkpoint config
     try:
-        n_classes = checkpoint['config']['model']['n_classes']
-        logger.info(f"Loaded n_classes={n_classes} from checkpoint config")
+        model_cfg = checkpoint['config']['model']
+        n_classes = model_cfg.get('n_classes', 1)
+        thresholds = list(model_cfg.get('thresholds', default_thresholds))
+        leaks = list(model_cfg.get('leaks', default_leaks))
+        kernel_sizes = list(model_cfg.get('kernel_sizes', default_kernel_sizes))
+        conv1_channels = model_cfg.get('conv1_channels', default_conv1_channels)
+        conv2_channels = model_cfg.get('conv2_channels', default_conv2_channels)
+        pool1_kernel = model_cfg.get('pool1_kernel', default_pool1_kernel)
+        pool1_stride = model_cfg.get('pool1_stride', default_pool1_stride)
+        pool2_kernel = model_cfg.get('pool2_kernel', default_pool2_kernel)
+        pool2_stride = model_cfg.get('pool2_stride', default_pool2_stride)
+        logger.info(f"Loaded model config from checkpoint: n_classes={n_classes}, "
+                   f"thresholds={thresholds}, leaks={leaks}, "
+                   f"channels=[{conv1_channels}, {conv2_channels}], kernels={kernel_sizes}")
     except (KeyError, TypeError):
         n_classes = 1  # Default to 1 (detection mode per IGARSS 2023)
-        logger.info(f"Using default n_classes={n_classes}")
+        thresholds = default_thresholds
+        leaks = default_leaks
+        kernel_sizes = default_kernel_sizes
+        conv1_channels = default_conv1_channels
+        conv2_channels = default_conv2_channels
+        pool1_kernel = default_pool1_kernel
+        pool1_stride = default_pool1_stride
+        pool2_kernel = default_pool2_kernel
+        pool2_stride = default_pool2_stride
+        logger.info(f"Using default model config: n_classes={n_classes}")
+
+    # Get input_channels from checkpoint config
+    try:
+        input_channels = checkpoint['config']['data']['input_channels']
+        logger.info(f"Loaded input_channels={input_channels} from checkpoint config")
+    except (KeyError, TypeError):
+        input_channels = 2  # Default to 2 (ON/OFF polarity)
+        logger.info(f"Using default input_channels={input_channels}")
 
     enc_config = EncoderConfig(
-        input_channels=2,
-        conv1=LayerConfig(out_channels=4, kernel_size=5, threshold=thresholds[0], leak=leaks[0]),
-        conv2=LayerConfig(out_channels=36, kernel_size=5, threshold=thresholds[1], leak=leaks[1]),
-        conv3=LayerConfig(out_channels=n_classes, kernel_size=7, threshold=thresholds[2], leak=leaks[2]),
-        # IGARSS 2023: 2x2 pooling (not Kheradpisheh's 7x7 stride 6)
-        pool1_kernel_size=2,
-        pool1_stride=2,
-        pool2_kernel_size=2,
-        pool2_stride=2,
+        input_channels=input_channels,
+        conv1=LayerConfig(out_channels=conv1_channels, kernel_size=kernel_sizes[0], threshold=thresholds[0], leak=leaks[0]),
+        conv2=LayerConfig(out_channels=conv2_channels, kernel_size=kernel_sizes[1], threshold=thresholds[1], leak=leaks[1]),
+        conv3=LayerConfig(out_channels=n_classes, kernel_size=kernel_sizes[2], threshold=thresholds[2], leak=leaks[2]),
+        pool1_kernel_size=pool1_kernel,
+        pool1_stride=pool1_stride,
+        pool2_kernel_size=pool2_kernel,
+        pool2_stride=pool2_stride,
     )
 
     model = SpikeSEGEncoder(enc_config)
@@ -576,14 +668,12 @@ def load_model(
 
     model.load_state_dict(filtered_state_dict, strict=False)
 
-    # IGARSS 2023 paper leak values (percentage of threshold):
-    # - Layer 1: 90% leak (short-term memory for fast objects)
-    # - Layer 2: 10% leak (long-term memory for slow objects)
-    # - Layer 3: 0% leak (classification)
-    # These temporal dynamics are CRITICAL for detecting both fast and slow objects
-    model.conv1.neuron.leak.data.fill_(0.09)  # 90% of threshold=0.1
-    model.conv2.neuron.leak.data.fill_(0.01)  # 10% of threshold=0.1
-    model.conv3.neuron.leak.data.fill_(0.0)   # No leak for classification
+    # Note: The model is already correctly initialized with leak values from the config.
+    # LayerConfig.leak contains absolute leak values (e.g., 0.09 for 90% of threshold=0.1)
+    # SpikingEncoderLayer converts to leak_factor = leak/threshold, then LIFNeuron
+    # converts back to leak = leak_factor * threshold, so the neuron.leak buffer
+    # is already set to the correct absolute leak value.
+    # No need to overwrite - the model respects the checkpoint config.
 
     model.to(device)
     model.eval()
@@ -641,9 +731,9 @@ def evaluate_objects(
     total_gt_objects = 0
     n_samples = 0
 
-    logger.info(f"Evaluating with OBJECT-LEVEL centroid matching...")
+    logger.info(f"Evaluating with OBJECT-LEVEL trajectory matching...")
     logger.info(f"  Spatial tolerance: {spatial_tolerance} pixel(s)")
-    logger.info(f"  Using ALL classification spikes (both classes)")
+    logger.info(f"  Mode: Detection must be within tolerance of ANY point on GT trajectory")
 
     for batch_idx, (x, labels) in enumerate(dataloader):
         labels = labels.to(device)
@@ -680,16 +770,23 @@ def evaluate_objects(
                 # Get ALL classification spikes (both classes) for object detection
                 class_spikes = output.classification_spikes[:, b]
 
-                # Extract GT object centroids
+                # Extract GT trajectory points (not just centroids!)
+                # This fixes the bug where GT centroid was center of entire trail
                 label_2d = labels[b] if labels.dim() == 3 else labels
-                gt_centroids = extract_gt_centroids(label_2d)
-                total_gt_objects += len(gt_centroids)
+                gt_points = extract_gt_centroids(label_2d, use_all_points=True)
+
+                # Each sample has 1 GT object (satellite) even though it has many trajectory points
+                has_gt = len(gt_points) > 0
+                if has_gt:
+                    total_gt_objects += 1
 
                 if class_spikes.sum() == 0:
-                    # No detections, all GT are FN
-                    total_fn += len(gt_centroids)
+                    # No detections
+                    if has_gt:
+                        total_fn += 1  # Missed the object
                     if batch_idx < 3:
-                        logger.info(f"  Sample {batch_idx}: detections=0, gt_objects={len(gt_centroids)}")
+                        logger.info(f"  Sample {batch_idx}: detections=0, gt_points={len(gt_points)}")
+                    n_samples += 1
                     continue
 
                 # Debug: show classification spike locations
@@ -699,27 +796,28 @@ def evaluate_objects(
                     logger.info(f"    Total classification spikes: {class_spikes.sum().item():.0f}")
                     if len(spike_locs) > 0:
                         logger.info(f"    Spike locations (class, y, x) first 10: {spike_locs[:10].tolist()}")
-                    # Check pooling indices
-                    p1_idx = pool_indices.pool1_indices[b]
-                    p2_idx = pool_indices.pool2_indices[b]
-                    logger.info(f"    Pool1 indices shape: {p1_idx.shape}, unique values: {p1_idx.unique().shape[0]}")
-                    logger.info(f"    Pool2 indices shape: {p2_idx.shape}, unique values: {p2_idx.unique().shape[0]}")
-                    logger.info(f"    Pool1 output_size: {pool_indices.pool1_output_size}")
-                    logger.info(f"    Pool2 output_size: {pool_indices.pool2_output_size}")
-                    # Check label shape
-                    logger.info(f"    Label shape: {label_2d.shape}")
+                    # Check label shape and GT info
+                    logger.info(f"    Label shape: {label_2d.shape}, GT trajectory points: {len(gt_points)}")
+                    if gt_points:
+                        logger.info(f"    GT trajectory span: x=[{min(p[0] for p in gt_points):.0f}, {max(p[0] for p in gt_points):.0f}], "
+                                   f"y=[{min(p[1] for p in gt_points):.0f}, {max(p[1] for p in gt_points):.0f}]")
 
                 # WORKAROUND: HULK unpooling is broken because pooling indices are only
                 # from the last timestep, but spikes occur across all timesteps.
                 # Use classification spike locations directly (scaled by 4) instead.
                 spike_locs = torch.nonzero(class_spikes.sum(dim=0))  # (N, 3) for [class, y, x]
                 if len(spike_locs) > 0:
-                    # Scale from 32x32 classification map to 128x128 pixel space
-                    scale_factor = 4  # Two 2x2 poolings
+                    # Scale from classification map to pixel space
+                    # Input 128x128 -> Pool1 64x64 -> Pool2 32x32
+                    # So scale factor = 128/32 = 4
+                    class_h, class_w = class_spikes.shape[2], class_spikes.shape[3]
+                    target_h, target_w = label_2d.shape[0], label_2d.shape[1]
+                    scale_factor_y = target_h / class_h
+                    scale_factor_x = target_w / class_w
 
                     # Use connected components for proper clustering (not naive grid)
                     # Create binary mask from spike locations in classification space
-                    spike_mask = (class_spikes.sum(dim=0).sum(dim=0) > 0).cpu().numpy()  # (32, 32)
+                    spike_mask = (class_spikes.sum(dim=0).sum(dim=0) > 0).cpu().numpy()
 
                     # Find connected components
                     labeled_array, num_features = ndimage.label(spike_mask)
@@ -730,34 +828,36 @@ def evaluate_objects(
                         coords = np.where(labeled_array == i)
                         if len(coords[0]) > 0:
                             # Centroid in classification space, then scale to pixel space
-                            cy = coords[0].mean() * scale_factor
-                            cx = coords[1].mean() * scale_factor
+                            cy = coords[0].mean() * scale_factor_y
+                            cx = coords[1].mean() * scale_factor_x
                             det_centroids.append((cx, cy))  # (x, y) format
 
                     total_detections += len(det_centroids)
                 else:
                     det_centroids = []
 
-                # Compute object-level metrics
-                metrics = compute_object_metrics(det_centroids, gt_centroids, spatial_tolerance)
+                # Compute object-level metrics using trajectory matching
+                # trajectory_mode=True: detection near ANY trajectory point = 1 TP
+                metrics = compute_object_metrics(
+                    det_centroids, gt_points, spatial_tolerance, trajectory_mode=True
+                )
                 total_tp += metrics['tp']
                 total_fp += metrics['fp']
                 total_fn += metrics['fn']
 
                 if batch_idx < 3:
                     logger.info(f"  Sample {batch_idx}: detections={len(det_centroids)}, "
-                               f"gt_objects={len(gt_centroids)}, tp={metrics['tp']}")
+                               f"gt_points={len(gt_points)}, tp={metrics['tp']}, fp={metrics['fp']}")
                     # Debug: show actual centroid coordinates
-                    if det_centroids and gt_centroids:
-                        logger.info(f"    GT centroids: {gt_centroids[:3]}")
-                        logger.info(f"    Det centroids (first 5): {det_centroids[:5]}")
-                        # Find minimum distance
+                    if det_centroids and gt_points:
+                        logger.info(f"    Det centroids: {det_centroids[:3]}")
+                        # Find minimum distance from any detection to trajectory
                         min_dist = float('inf')
                         for dx, dy in det_centroids:
-                            for gx, gy in gt_centroids:
+                            for gx, gy in gt_points:
                                 dist = np.sqrt((dx - gx)**2 + (dy - gy)**2)
                                 min_dist = min(min_dist, dist)
-                        logger.info(f"    Min distance between any det and GT: {min_dist:.1f} pixels")
+                        logger.info(f"    Min distance from detection to trajectory: {min_dist:.1f} pixels")
 
         n_samples += batch_size
 
@@ -977,8 +1077,8 @@ def main():
     parser.add_argument(
         '--spatial-tolerance',
         type=int,
-        default=5,
-        help='Spatial tolerance in pixels for TP (default: 5 to account for event-label offset)'
+        default=10,
+        help='Spatial tolerance in pixels for TP (default: 10 - accounts for 4x scale from 32x32 class map)'
     )
     parser.add_argument(
         '--no-hulk',
