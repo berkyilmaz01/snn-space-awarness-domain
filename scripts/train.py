@@ -149,7 +149,7 @@ class STDPParams:
     weight_min: float = 0.0     # Minimum weight bound
     weight_max: float = 1.0     # Maximum weight bound
     weight_init_mean: float = 0.8  # Initial weight mean
-    weight_init_std: float = 0.05  # Initial weight std (Kheradpisheh 2018: 0.05 for diversity)
+    weight_init_std: float = 0.01  # Initial weight std (IGARSS 2023: 0.01 for tight clustering)
     use_soft_bounds: bool = True   # Use multiplicative soft bounds
     
     def validate(self) -> None:
@@ -478,7 +478,7 @@ class TrainingConfig:
                     lr_plus=0.04,
                     lr_minus=0.03,
                     weight_init_mean=0.8,
-                    weight_init_std=0.05  # Kheradpisheh 2018: 0.05 for weight diversity
+                    weight_init_std=0.01  # IGARSS 2023: 0.01 for tight clustering
                 ),
                 model=ModelParams(
                     conv1_channels=4,
