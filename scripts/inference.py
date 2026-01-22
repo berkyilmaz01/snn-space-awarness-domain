@@ -570,6 +570,10 @@ def main():
     parser.add_argument('--visualize', action='store_true', help='Save 2D visualization images')
     parser.add_argument('--visualize-3d', action='store_true', help='Save 3D trajectory visualization (paper style)')
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--split', default='all', choices=['train', 'val', 'test', 'all'],
+                        help='Dataset split to use (default: all)')
+    parser.add_argument('--train-ratio', type=float, default=0.9,
+                        help='Train/test split ratio (default: 0.9 for 90/10 split)')
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -595,8 +599,10 @@ def main():
             normalize=True,
             use_labels=True,
             windows_per_recording=1,
+            split=args.split,
+            train_ratio=args.train_ratio,
         )
-        print(f"Dataset: {len(dataset)} samples")
+        print(f"Dataset ({args.split} split, ratio={args.train_ratio}): {len(dataset)} samples")
 
         for i in range(len(dataset)):
             x, label = dataset[i]
