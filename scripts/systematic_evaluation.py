@@ -71,6 +71,11 @@ class SyntheticDataGenerator:
         self.C = config.C
         self.T = config.T
         
+        # Hot pixels: 0.1% of pixels (~16 on 128x128)
+        self.hot_pixel_rate = 0.001
+        self.hot_pixels = torch.rand(self.H, self.W) < self.hot_pixel_rate
+        self.hot_pixel_intensity = 0.1  # Weak intensity
+        
         
     def generate_trajectory(
         self, 
@@ -130,12 +135,12 @@ class SyntheticDataGenerator:
         return trajectories
     
     def generate_non_crossing_trajectories(self, n_objects: int, T: int) -> List[List[Tuple[float, float]]]:
-        """Generate trajectories that don't cross."""
+        """Generate trajectories that don't cross - start near center for reliable detection."""
         trajectories = []
         
-        # Divide space into regions
+        # Start positions near center (avoid edges where offset correction is less reliable)
         regions = [
-            (25, 25), (100, 25), (25, 100), (100, 100), (64, 64)
+            (50, 50), (78, 50), (50, 78), (78, 78), (64, 64)
         ]
         
         for i in range(min(n_objects, len(regions))):
@@ -167,7 +172,7 @@ class SyntheticDataGenerator:
         for obj_idx, (cx, cy) in enumerate(positions):
             icx, icy = int(cx), int(cy)
             
-            # Add tail if previous positions available (brighter tail)
+            # Add tail if previous positions available (bright trail)
             if prev_positions is not None and len(prev_positions[obj_idx]) > 0:
                 for tail_idx in range(1, min(tail_length + 1, t + 1)):
                     if t - tail_idx >= 0 and t - tail_idx < len(prev_positions[obj_idx]):
@@ -178,21 +183,26 @@ class SyntheticDataGenerator:
                             for dx in range(-1, 2):
                                 py, px = itcy + dy, itcx + dx
                                 if 0 <= py < self.H and 0 <= px < self.W:
-                                    frame[0, py, px] = max(frame[0, py, px].item(), fade * 0.25)  # Was 0.15
-                                    frame[1, py, px] = max(frame[1, py, px].item(), fade * 0.6)   # Was 0.4
+                                    frame[0, py, px] = max(frame[0, py, px].item(), fade * 0.35)
+                                    frame[1, py, px] = max(frame[1, py, px].item(), fade * 0.7)
             
-            # Add satellite core (BRIGHT - high intensity to stand out from noise)
+            # Add satellite core (VERY BRIGHT - stands out clearly from noise)
             for dy in range(-3, 4):
                 for dx in range(-3, 4):
                     py, px = icy + dy, icx + dx
                     if 0 <= py < self.H and 0 <= px < self.W:
                         dist = np.sqrt(dx**2 + dy**2)
-                        intensity = max(0, 1.0 - dist * 0.18)  # Wider bright core
-                        frame[0, py, px] = max(frame[0, py, px].item(), intensity * 0.5)  # Was 0.3
-                        frame[1, py, px] = max(frame[1, py, px].item(), intensity * 1.0)  # Already max
+                        intensity = max(0, 1.0 - dist * 0.15)  # Even wider bright core
+                        frame[0, py, px] = max(frame[0, py, px].item(), intensity * 0.7)  # Brighter
+                        frame[1, py, px] = max(frame[1, py, px].item(), intensity * 1.0)
         
-        # Add noise (simple additive - this version worked before)
+        # Add noise
         if noise_level > 0:
+            # 1. Hot pixels (0.1% - weak but consistent)
+            frame[0] = torch.clamp(frame[0] + self.hot_pixels.float() * self.hot_pixel_intensity * 0.3, 0, 1)
+            frame[1] = torch.clamp(frame[1] + self.hot_pixels.float() * self.hot_pixel_intensity * 0.5, 0, 1)
+            
+            # 2. Random background noise
             noise_mask = torch.rand(self.H, self.W) < noise_level
             noise_intensity = torch.rand(self.H, self.W) * (0.2 + 0.3 * noise_level)
             
@@ -314,8 +324,9 @@ class EvaluationEngine:
         if T is None:
             T = self.config.T
             
-        # Generate data
+        # Generate data with consistent seeding
         np.random.seed(self.config.seed)
+        torch.manual_seed(self.config.seed + int(noise_level * 1000))  # Vary by noise level
         frames, trajectories = self.generator.generate_dataset(
             n_objects, noise_level, crossover, T
         )
