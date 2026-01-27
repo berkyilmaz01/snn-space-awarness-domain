@@ -260,11 +260,17 @@ class EvaluationEngine:
         self.config = config
         self.generator = SyntheticDataGenerator(config)
         
-    def detect_objects(self, spike_map: np.ndarray, scale: float, min_size: int = 2) -> List[Tuple[float, float]]:
-        """Detect objects from spike map.
+    def detect_objects(self, spike_map: np.ndarray, scale: float, n_objects: int = 1, min_distance: int = 3) -> List[Tuple[float, float]]:
+        """Detect objects from spike map using peak finding.
         
-        Uses argmax for single object, connected components for multiple.
+        Uses iterative peak finding with suppression for multiple objects.
         Applies receptive field offset correction (16, 20).
+        
+        Args:
+            spike_map: 2D spike activity map
+            scale: Scale factor from spike map to image coordinates
+            n_objects: Expected number of objects to detect
+            min_distance: Minimum distance between peaks (in spike map coords)
         """
         # Receptive field offset - determined empirically
         OFFSET_X, OFFSET_Y = 16, 20
@@ -274,25 +280,27 @@ class EvaluationEngine:
         if spike_map.max() <= 0:
             return detections
         
-        # For single object: use argmax (most reliable)
-        # For multiple objects: use connected components
-        binary = (spike_map > 0).astype(int)
-        labeled, num_features = scipy_label(binary)
+        # Work with a copy for suppression
+        spike_copy = spike_map.copy()
         
-        if num_features <= 1:
-            # Single detection - use argmax for accuracy
-            sy, sx = np.unravel_index(spike_map.argmax(), spike_map.shape)
+        for _ in range(n_objects):
+            if spike_copy.max() <= 0:
+                break
+                
+            # Find peak
+            sy, sx = np.unravel_index(spike_copy.argmax(), spike_copy.shape)
+            
+            # Convert to image coordinates with offset
             det_x = sx * scale + OFFSET_X
             det_y = sy * scale + OFFSET_Y
             detections.append((det_x, det_y))
-        else:
-            # Multiple detections - use connected components
-            for obj_id in range(1, num_features + 1):
-                coords = np.where(labeled == obj_id)
-                if len(coords[0]) >= min_size:
-                    det_y = coords[0].mean() * scale + OFFSET_Y
-                    det_x = coords[1].mean() * scale + OFFSET_X
-                    detections.append((det_x, det_y))
+            
+            # Suppress this peak region (non-maximum suppression)
+            y_min = max(0, sy - min_distance)
+            y_max = min(spike_copy.shape[0], sy + min_distance + 1)
+            x_min = max(0, sx - min_distance)
+            x_max = min(spike_copy.shape[1], sx + min_distance + 1)
+            spike_copy[y_min:y_max, x_min:x_max] = 0
         
         return detections
     
@@ -365,7 +373,7 @@ class EvaluationEngine:
         
         for t in range(T):
             spike_map = spikes[t].sum(axis=0)
-            detections = self.detect_objects(spike_map, scale)
+            detections = self.detect_objects(spike_map, scale, n_objects=n_objects)
             gt_positions = [traj[t] for traj in trajectories]
             
             errors, matched = self.match_detections_to_gt(detections, gt_positions)
