@@ -155,16 +155,14 @@ class SyntheticDataGenerator:
         prev_positions: Optional[List[List[Tuple[float, float]]]] = None,
         t: int = 0
     ) -> torch.Tensor:
-        """Create a single frame with objects and noise."""
+        """Create a single frame with objects and noise.
+        
+        Noise model: At noise_level X, X% of pixels are corrupted with
+        signal-strength noise that can mask the satellite.
+        """
         frame = torch.zeros(self.C, self.H, self.W)
         
-        # Add background noise
-        if noise_level > 0:
-            noise_mask = torch.rand(self.H, self.W) < noise_level
-            frame[0] += noise_mask.float() * np.random.uniform(0.1, 0.3)
-            frame[1] += noise_mask.float() * np.random.uniform(0.05, 0.15)
-        
-        # Add each object
+        # First add each object (signal)
         for obj_idx, (cx, cy) in enumerate(positions):
             icx, icy = int(cx), int(cy)
             
@@ -191,6 +189,16 @@ class SyntheticDataGenerator:
                         intensity = max(0, 1.0 - dist * 0.22)
                         frame[0, py, px] = max(frame[0, py, px].item(), intensity * 0.3)
                         frame[1, py, px] = max(frame[1, py, px].item(), intensity * 1.0)
+        
+        # Then add noise ON TOP (can corrupt signal)
+        if noise_level > 0:
+            noise_mask = torch.rand(self.H, self.W) < noise_level
+            # Noise with signal-comparable intensity (0.5-1.0 range)
+            noise_intensity = torch.rand(self.H, self.W) * 0.5 + 0.5
+            
+            # Apply noise - overwrites signal where mask is True
+            frame[0] = torch.where(noise_mask, noise_intensity * 0.3, frame[0])
+            frame[1] = torch.where(noise_mask, noise_intensity * 1.0, frame[1])
         
         return frame
     
