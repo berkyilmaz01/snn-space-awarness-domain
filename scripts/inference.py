@@ -465,9 +465,10 @@ def create_tracking_video(
                 ys = [p[1] for p in traj_per_frame[t]]
                 avg_traj_per_frame[t] = (np.mean(xs), np.mean(ys))
 
-    # Get network detection boxes per frame (from spike locations)
-    detection_boxes = {t: [] for t in range(T)}
-    for t in range(min(T_pred, T)):
+    # Get network detection locations (spatial - where the network detected something)
+    # These are static spatial positions, we'll show tracking box when GT is near them
+    detection_centers = []
+    for t in range(T_pred):
         spike_map = pred_np[t]
         if spike_map.sum() > 0:
             from scipy import ndimage
@@ -481,7 +482,22 @@ def create_tracking_video(
                     x_min = coords[1].min() * scale_x + offset
                     x_max = (coords[1].max() + 1) * scale_x + offset
                     cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
-                    detection_boxes[t].append({'box': (x_min, y_min, x_max - x_min, y_max - y_min), 'center': (cx, cy)})
+                    detection_centers.append((cx, cy))
+
+    # For each frame, check if GT is near any detection - if so, show tracking box on GT
+    detection_radius = 30  # pixels
+    tracking_per_frame = {}  # frame -> (cx, cy) if tracking active
+
+    if detection_centers and avg_traj_per_frame:
+        det_arr = np.array(detection_centers)
+        for t in range(T):
+            if t in avg_traj_per_frame:
+                gt_cx, gt_cy = avg_traj_per_frame[t]
+                # Check if any detection is near this GT position
+                dists = np.sqrt((det_arr[:, 0] - gt_cx)**2 + (det_arr[:, 1] - gt_cy)**2)
+                if np.min(dists) < detection_radius:
+                    # Network detected near this position - show tracking box
+                    tracking_per_frame[t] = (gt_cx, gt_cy)
 
     # Create custom colormap: black -> blue -> white (for event intensity)
     colors = ['black', '#001133', '#003366', '#0066cc', '#3399ff', 'white']
@@ -521,36 +537,35 @@ def create_tracking_video(
             # Draw cyan crosshair
             ax.plot(cx, cy, 'c+', markersize=12, markeredgewidth=2)
 
-        # Draw network detection boxes (green/lime)
-        for det in detection_boxes[frame]:
-            x, y, w, h = det['box']
-            rect = patches.Rectangle(
-                (x, y), w, h,
+        # Draw network detection box (green/lime) - follows satellite when detected
+        is_tracking = frame in tracking_per_frame
+        if is_tracking:
+            cx, cy = tracking_per_frame[frame]
+            box_size = 25  # slightly larger than GT box
+            det_rect = patches.Rectangle(
+                (cx - box_size/2, cy - box_size/2), box_size, box_size,
                 linewidth=3, edgecolor='lime', facecolor='none',
-                label='Detection'
+                label='SNN Detection'
             )
-            ax.add_patch(rect)
-            cx, cy = det['center']
+            ax.add_patch(det_rect)
             ax.plot(cx, cy, 'g+', markersize=15, markeredgewidth=3)
 
-        # Draw trajectory trail (last 5 frames)
+        # Draw trajectory trail (last 5 frames) - green where tracked, cyan where not
         trail_frames = range(max(0, frame-5), frame+1)
-        trail_x, trail_y = [], []
-        for tf in trail_frames:
-            if tf in avg_traj_per_frame:
-                trail_x.append(avg_traj_per_frame[tf][0])
-                trail_y.append(avg_traj_per_frame[tf][1])
-        if len(trail_x) > 1:
-            ax.plot(trail_x, trail_y, 'c-', linewidth=1, alpha=0.5)
+        for tf in trail_frames[:-1]:  # Don't include current frame
+            if tf in avg_traj_per_frame and tf+1 in avg_traj_per_frame:
+                x1, y1 = avg_traj_per_frame[tf]
+                x2, y2 = avg_traj_per_frame[tf+1]
+                color = 'lime' if tf in tracking_per_frame else 'cyan'
+                ax.plot([x1, x2], [y1, y2], color=color, linewidth=2, alpha=0.7)
 
         ax.set_xlim(0, W)
         ax.set_ylim(H, 0)
 
         # Title with info
-        n_det = len(detection_boxes[frame])
         has_gt = frame in avg_traj_per_frame
-        title = f'Frame {frame+1}/{T} | Events: Accumulated | '
-        title += f'Detection: {"YES" if n_det > 0 else "NO"} | GT: {"visible" if has_gt else "none"}'
+        title = f'Frame {frame+1}/{T} | '
+        title += f'SNN Detection: {"TRACKING" if is_tracking else "---"} | GT: {"visible" if has_gt else "none"}'
         ax.set_title(title, fontsize=12, color='white', pad=10)
         ax.axis('off')
 
