@@ -398,10 +398,17 @@ def run_hulk_smash_tracking(
             }
 
         # Get pooling indices for batch 0
+        # HULK expects batch size = 1, so slice if needed
         pool1_idx = pool_indices.pool1_indices
         pool2_idx = pool_indices.pool2_indices
         pool1_size = pool_indices.pool1_output_size
         pool2_size = pool_indices.pool2_output_size
+
+        # Ensure pooling indices have batch size = 1
+        if pool1_idx.shape[0] > 1:
+            pool1_idx = pool1_idx[0:1]
+        if pool2_idx.shape[0] > 1:
+            pool2_idx = pool2_idx[0:1]
 
         # Use HULK to process all classification spikes into instances
         try:
