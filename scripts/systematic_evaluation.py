@@ -261,25 +261,38 @@ class EvaluationEngine:
         self.generator = SyntheticDataGenerator(config)
         
     def detect_objects(self, spike_map: np.ndarray, scale: float, min_size: int = 2) -> List[Tuple[float, float]]:
-        """Detect multiple objects using connected components.
+        """Detect objects from spike map.
         
-        Applies receptive field offset correction (16, 20) to map spike coordinates
-        back to image coordinates accurately.
+        Uses argmax for single object, connected components for multiple.
+        Applies receptive field offset correction (16, 20).
         """
         # Receptive field offset - determined empirically
         OFFSET_X, OFFSET_Y = 16, 20
         
+        detections = []
+        
+        if spike_map.max() <= 0:
+            return detections
+        
+        # For single object: use argmax (most reliable)
+        # For multiple objects: use connected components
         binary = (spike_map > 0).astype(int)
         labeled, num_features = scipy_label(binary)
         
-        detections = []
-        for obj_id in range(1, num_features + 1):
-            coords = np.where(labeled == obj_id)
-            if len(coords[0]) >= min_size:
-                # Apply scale and offset correction
-                det_y = coords[0].mean() * scale + OFFSET_Y
-                det_x = coords[1].mean() * scale + OFFSET_X
-                detections.append((det_x, det_y))
+        if num_features <= 1:
+            # Single detection - use argmax for accuracy
+            sy, sx = np.unravel_index(spike_map.argmax(), spike_map.shape)
+            det_x = sx * scale + OFFSET_X
+            det_y = sy * scale + OFFSET_Y
+            detections.append((det_x, det_y))
+        else:
+            # Multiple detections - use connected components
+            for obj_id in range(1, num_features + 1):
+                coords = np.where(labeled == obj_id)
+                if len(coords[0]) >= min_size:
+                    det_y = coords[0].mean() * scale + OFFSET_Y
+                    det_x = coords[1].mean() * scale + OFFSET_X
+                    detections.append((det_x, det_y))
         
         return detections
     
