@@ -465,6 +465,32 @@ def create_tracking_video(
                 ys = [p[1] for p in traj_per_frame[t]]
                 avg_traj_per_frame[t] = (np.mean(xs), np.mean(ys))
 
+        # Interpolate trajectory to fill ALL frames (fixes sparse trajectory issue)
+        if avg_traj_per_frame:
+            known_frames = sorted(avg_traj_per_frame.keys())
+            if len(known_frames) >= 2:
+                # Linear interpolation between known points
+                known_x = [avg_traj_per_frame[f][0] for f in known_frames]
+                known_y = [avg_traj_per_frame[f][1] for f in known_frames]
+                for t in range(T):
+                    if t not in avg_traj_per_frame:
+                        # Find surrounding known frames
+                        prev_f = max([f for f in known_frames if f <= t], default=known_frames[0])
+                        next_f = min([f for f in known_frames if f >= t], default=known_frames[-1])
+                        if prev_f == next_f:
+                            avg_traj_per_frame[t] = avg_traj_per_frame[prev_f]
+                        else:
+                            # Linear interpolation
+                            alpha = (t - prev_f) / (next_f - prev_f)
+                            x_interp = avg_traj_per_frame[prev_f][0] + alpha * (avg_traj_per_frame[next_f][0] - avg_traj_per_frame[prev_f][0])
+                            y_interp = avg_traj_per_frame[prev_f][1] + alpha * (avg_traj_per_frame[next_f][1] - avg_traj_per_frame[prev_f][1])
+                            avg_traj_per_frame[t] = (x_interp, y_interp)
+            elif len(known_frames) == 1:
+                # Only one known frame - use it for all frames
+                single_pos = avg_traj_per_frame[known_frames[0]]
+                for t in range(T):
+                    avg_traj_per_frame[t] = single_pos
+
     # Get network detection locations WITH timestamps
     # Track (x, y, t) to enable temporal-aware matching
     detection_points = []  # List of (cx, cy, t)
