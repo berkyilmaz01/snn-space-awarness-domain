@@ -71,6 +71,25 @@ class SyntheticDataGenerator:
         self.C = config.C
         self.T = config.T
         
+        # Hot pixel map (some pixels always fire - realistic sensor defect)
+        self.hot_pixel_rate = 0.001  # 0.1% of pixels are "hot"
+        self.hot_pixels = torch.rand(self.H, self.W) < self.hot_pixel_rate
+        
+        # Spatial noise non-uniformity (some regions noisier - like sensor edges)
+        self.noise_bias = self._create_noise_bias_map()
+        
+    def _create_noise_bias_map(self) -> torch.Tensor:
+        """Create spatial noise bias - edges and corners are noisier."""
+        y_coords = torch.linspace(0, 1, self.H).unsqueeze(1).expand(self.H, self.W)
+        x_coords = torch.linspace(0, 1, self.W).unsqueeze(0).expand(self.H, self.W)
+        
+        # Distance from center (normalized)
+        dist_from_center = torch.sqrt((x_coords - 0.5)**2 + (y_coords - 0.5)**2) / 0.707
+        
+        # Edges are 1.5x noisier, center is baseline
+        noise_bias = 1.0 + 0.5 * dist_from_center
+        return noise_bias
+        
     def generate_trajectory(
         self, 
         start_pos: Tuple[float, float],
@@ -190,18 +209,39 @@ class SyntheticDataGenerator:
                         frame[0, py, px] = max(frame[0, py, px].item(), intensity * 0.3)
                         frame[1, py, px] = max(frame[1, py, px].item(), intensity * 1.0)
         
-        # Then add noise (realistic model: additive noise that can partially obscure signal)
+        # Then add noise (realistic event camera noise model)
         if noise_level > 0:
-            # Probabilistic noise: each pixel has noise_level chance of getting noise
-            noise_mask = torch.rand(self.H, self.W) < noise_level
+            # 1. HOT PIXELS: Always fire (sensor defects)
+            hot_pixel_intensity = torch.rand(self.H, self.W) * 0.3 + 0.2  # 0.2-0.5 intensity
+            frame[0] = torch.clamp(frame[0] + self.hot_pixels.float() * hot_pixel_intensity * 0.3, 0, 1)
+            frame[1] = torch.clamp(frame[1] + self.hot_pixels.float() * hot_pixel_intensity * 0.8, 0, 1)
             
-            # Noise intensity scales with noise_level (higher noise = stronger)
-            base_intensity = 0.2 + 0.4 * noise_level  # 0.2 at low, 0.6 at high
-            noise_intensity = torch.rand(self.H, self.W) * base_intensity
+            # 2. BACKGROUND ACTIVITY: Poisson-distributed random events
+            # Rate parameter scales with noise_level and spatial bias
+            poisson_rate = noise_level * self.noise_bias
             
-            # Additive noise (doesn't completely overwrite signal)
+            # Sample from Poisson distribution (number of events per pixel)
+            # Use approximation: for small rates, Poisson ~ Bernoulli
+            noise_mask = torch.rand(self.H, self.W) < poisson_rate
+            
+            # 3. SHOT NOISE: Intensity varies (Poisson-like amplitude)
+            # Higher noise = more variation in intensity
+            base_intensity = 0.2 + 0.4 * noise_level
+            # Exponential distribution better models shot noise than uniform
+            noise_intensity = torch.zeros(self.H, self.W).exponential_(1.0 / base_intensity)
+            noise_intensity = torch.clamp(noise_intensity, 0, 1.0)  # Cap at max
+            
+            # 4. TEMPORAL CORRELATION: Some noise pixels are "sticky" (repeat)
+            # This is handled implicitly by hot pixels
+            
+            # Apply background noise
             frame[0] = torch.clamp(frame[0] + noise_mask.float() * noise_intensity * 0.3, 0, 1)
             frame[1] = torch.clamp(frame[1] + noise_mask.float() * noise_intensity * 1.0, 0, 1)
+            
+            # 5. REFRACTORY PERIOD: Pixels that just fired are less likely to fire again
+            # Simulate by slightly suppressing very bright pixels
+            refractory_mask = frame[1] > 0.9
+            frame[1] = torch.where(refractory_mask, frame[1] * 0.95, frame[1])
         
         return frame
     
