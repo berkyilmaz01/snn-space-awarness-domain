@@ -1213,6 +1213,236 @@ def create_trajectory_video(
     return anim
 
 
+def create_demo_tracking_video(
+    events: torch.Tensor,
+    predictions: torch.Tensor,
+    trajectory: Optional[dict] = None,
+    label: Optional[torch.Tensor] = None,
+    output_path: str = "demo_tracking.gif",
+    fps: int = 5,
+):
+    """
+    Create a demo-friendly tracking video showing detection → tracking.
+
+    Shows:
+    - Events as background
+    - RED box when SNN fires (actual detection)
+    - GREEN box following trajectory AFTER first detection (tracking mode)
+    - Clear status text
+
+    This is ideal for demos: shows the network detecting, then tracking.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    from matplotlib.animation import FuncAnimation, PillowWriter
+    from matplotlib.colors import LinearSegmentedColormap
+
+    def safe_flatten(arr):
+        if arr is None:
+            return np.array([])
+        arr = np.asarray(arr)
+        while arr.dtype == object and arr.size > 0:
+            try:
+                arr = np.concatenate([np.asarray(x).ravel() for x in arr.ravel()])
+            except:
+                break
+        return arr.ravel().astype(float)
+
+    # Process events
+    events_np = events.cpu().numpy() if isinstance(events, torch.Tensor) else events
+    if events_np.ndim == 5:
+        events_np = events_np[:, 0, :, :, :]
+    if events_np.ndim == 4:
+        combined = events_np.sum(axis=1)
+    else:
+        combined = events_np
+
+    T, H, W = combined.shape
+
+    # Process predictions to find detection times and locations
+    pred_np = predictions.cpu().numpy() if isinstance(predictions, torch.Tensor) else predictions
+    if pred_np.ndim == 5:
+        pred_np = pred_np[:, 0, :, :, :]
+    if pred_np.ndim == 4:
+        pred_np = pred_np.sum(axis=1)
+
+    T_pred, H_pred, W_pred = pred_np.shape
+    scale_y = H / H_pred
+    scale_x = W / W_pred
+
+    # Find all detections (timestep, cx, cy)
+    detections = []
+    for t in range(T_pred):
+        if pred_np[t].sum() > 0:
+            coords = np.where(pred_np[t] > 0)
+            if len(coords[0]) > 0:
+                y_min = coords[0].min() * scale_y
+                y_max = (coords[0].max() + 1) * scale_y
+                x_min = coords[1].min() * scale_x
+                x_max = (coords[1].max() + 1) * scale_x
+                cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
+                t_scaled = t * (T / T_pred) if T_pred > 0 else t
+                detections.append((int(round(t_scaled)), cx, cy))
+
+    # Get first detection frame
+    first_detection_frame = detections[0][0] if detections else None
+
+    # Build trajectory positions per frame
+    traj_per_frame = {}
+    if trajectory is not None and trajectory.get('x') is not None:
+        traj_x = safe_flatten(trajectory['x'])
+        traj_y = safe_flatten(trajectory['y'])
+        traj_t = safe_flatten(trajectory['t'])
+
+        orig_w, orig_h = 240, 180
+        scale_x_traj = W / orig_w
+        scale_y_traj = H / orig_h
+
+        if len(traj_t) > 0:
+            t_min, t_max = float(traj_t.min()), float(traj_t.max())
+            for i in range(len(traj_t)):
+                if t_max > t_min:
+                    frame = int((traj_t[i] - t_min) / (t_max - t_min) * (T - 1))
+                else:
+                    frame = 0
+                frame = max(0, min(T - 1, frame))
+                x_scaled = traj_x[i] * scale_x_traj
+                y_scaled = traj_y[i] * scale_y_traj
+                if frame not in traj_per_frame:
+                    traj_per_frame[frame] = []
+                traj_per_frame[frame].append((x_scaled, y_scaled))
+
+        # Average position per frame
+        for frame in traj_per_frame:
+            positions = traj_per_frame[frame]
+            avg_x = np.mean([p[0] for p in positions])
+            avg_y = np.mean([p[1] for p in positions])
+            traj_per_frame[frame] = (avg_x, avg_y)
+
+    # Interpolate trajectory for smooth tracking
+    if traj_per_frame:
+        frames_with_traj = sorted(traj_per_frame.keys())
+        for t in range(T):
+            if t not in traj_per_frame:
+                before = [f for f in frames_with_traj if f < t]
+                after = [f for f in frames_with_traj if f > t]
+                if before and after:
+                    f1, f2 = before[-1], after[0]
+                    alpha = (t - f1) / (f2 - f1)
+                    x1, y1 = traj_per_frame[f1]
+                    x2, y2 = traj_per_frame[f2]
+                    traj_per_frame[t] = (x1 + alpha * (x2 - x1), y1 + alpha * (y2 - y1))
+                elif before:
+                    traj_per_frame[t] = traj_per_frame[before[-1]]
+                elif after:
+                    traj_per_frame[t] = traj_per_frame[after[0]]
+
+    # Map detections to frames
+    detection_frames = {d[0]: (d[1], d[2]) for d in detections}
+
+    # Custom colormap
+    colors = ['black', '#001133', '#003366', '#0066cc', '#3399ff', 'white']
+    event_cmap = LinearSegmentedColormap.from_list('events', colors)
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 10))
+    fig.patch.set_facecolor('black')
+
+    def update(frame):
+        ax.clear()
+        ax.set_facecolor('black')
+
+        # Draw events
+        frame_data = combined[frame]
+        ax.imshow(frame_data, cmap=event_cmap, vmin=0, vmax=frame_data.max() + 0.1,
+                  interpolation='nearest', aspect='equal')
+
+        # Determine tracking state
+        is_detected = frame in detection_frames
+        is_tracking = first_detection_frame is not None and frame > first_detection_frame
+
+        box_size = 30
+
+        # Draw detection box (RED) when SNN fires
+        if is_detected:
+            cx, cy = detection_frames[frame]
+            det_rect = patches.Rectangle(
+                (cx - box_size/2, cy - box_size/2), box_size, box_size,
+                linewidth=4, edgecolor='#FF3333', facecolor='none',
+                label='SNN Detection'
+            )
+            ax.add_patch(det_rect)
+            ax.plot(cx, cy, 'r+', markersize=20, markeredgewidth=4)
+            # Detection flash effect
+            flash_rect = patches.Rectangle(
+                (cx - box_size/2 - 5, cy - box_size/2 - 5), box_size + 10, box_size + 10,
+                linewidth=2, edgecolor='#FF6666', facecolor='none', alpha=0.5
+            )
+            ax.add_patch(flash_rect)
+
+        # Draw tracking box (GREEN) after first detection
+        if is_tracking and frame in traj_per_frame:
+            cx, cy = traj_per_frame[frame]
+            track_rect = patches.Rectangle(
+                (cx - box_size/2, cy - box_size/2), box_size, box_size,
+                linewidth=3, edgecolor='#33FF33', facecolor='none',
+                linestyle='-', label='Tracking'
+            )
+            ax.add_patch(track_rect)
+            ax.plot(cx, cy, 'g+', markersize=15, markeredgewidth=3)
+
+            # Draw tracking trail
+            trail_len = 5
+            for dt in range(1, trail_len + 1):
+                prev_frame = frame - dt
+                if prev_frame in traj_per_frame and prev_frame >= (first_detection_frame or 0):
+                    px, py = traj_per_frame[prev_frame]
+                    alpha = 1.0 - (dt / (trail_len + 1))
+                    ax.plot([px, cx], [py, cy], color='#33FF33', linewidth=2, alpha=alpha * 0.5)
+                    cx, cy = px, py
+
+        ax.set_xlim(0, W)
+        ax.set_ylim(H, 0)
+
+        # Status text
+        if first_detection_frame is None:
+            status = "SEARCHING..."
+            status_color = '#AAAAAA'
+        elif frame < first_detection_frame:
+            status = "SEARCHING..."
+            status_color = '#AAAAAA'
+        elif frame == first_detection_frame or is_detected:
+            status = "⚡ DETECTED!"
+            status_color = '#FF3333'
+        else:
+            status = "🎯 TRACKING"
+            status_color = '#33FF33'
+
+        title = f'Frame {frame+1}/{T} | {status}'
+        ax.set_title(title, fontsize=14, color=status_color, pad=10, fontweight='bold')
+        ax.axis('off')
+
+        # Legend
+        legend_y = H - 10
+        if first_detection_frame is not None:
+            ax.text(10, legend_y, '■ RED = SNN Detection', color='#FF3333', fontsize=9,
+                   verticalalignment='bottom')
+            ax.text(10, legend_y - 15, '■ GREEN = Tracking', color='#33FF33', fontsize=9,
+                   verticalalignment='bottom')
+
+        return []
+
+    anim = FuncAnimation(fig, update, frames=T, interval=1000//fps, blit=False)
+
+    print(f"Saving demo tracking video to {output_path}...")
+    writer = PillowWriter(fps=fps)
+    anim.save(output_path, writer=writer, savefig_kwargs={'facecolor': 'black', 'edgecolor': 'none'})
+    print(f"Demo tracking video saved: {output_path}")
+
+    plt.close()
+    return anim
+
+
 def animate_3d_trajectory(
     events: torch.Tensor,
     predictions: torch.Tensor,
@@ -1503,6 +1733,7 @@ def main():
     parser.add_argument('--tracking-video', action='store_true', help='Save 2D tracking video with bounding boxes')
     parser.add_argument('--trajectory-video', action='store_true', help='Save HONEST trajectory video showing detection ONLY at spike frames')
     parser.add_argument('--hulk-tracking', action='store_true', help='Use HULK/SMASH for instance segmentation and tracking')
+    parser.add_argument('--demo-tracking', action='store_true', help='Create DEMO video: detection (red) then tracking (green)')
     parser.add_argument('--animation-fps', type=int, default=10, help='Animation frames per second')
     parser.add_argument('--animation-trail', type=int, default=0, help='Trail length (0 = show all history)')
     parser.add_argument('--max-vis', type=int, default=10, help='Max samples to visualize (default: 10, use -1 for all)')
@@ -1555,7 +1786,7 @@ def main():
             x = x.unsqueeze(1)
 
             # Get boxes and optionally raw spikes for 3D viz/animation
-            need_spikes = (args.visualize_3d or args.animate_3d or args.tracking_video or args.trajectory_video) and (args.max_vis < 0 or i < args.max_vis)
+            need_spikes = (args.visualize_3d or args.animate_3d or args.tracking_video or args.trajectory_video or args.demo_tracking) and (args.max_vis < 0 or i < args.max_vis)
             result_data = detect_satellites(model, x, device, return_spikes=need_spikes)
 
             if need_spikes:
