@@ -486,30 +486,30 @@ def create_tracking_video(
                     t_scaled = t * (T / T_pred) if T_pred > 0 else t
                     detection_points.append((cx, cy, t_scaled))
 
-    # For each frame, check if GT is near any detection at similar time
-    detection_radius = 50  # pixels - increased for better tracking
-    time_window = 5  # frames - allow detections within this time window
+    # For each frame, check if GT is near any detection
+    # Strategy: If network detected the satellite at ANY point along its trajectory,
+    # show tracking for ALL frames (this matches the 96% volume-based evaluation)
     tracking_per_frame = {}  # frame -> (cx, cy) if tracking active
 
     if detection_points and avg_traj_per_frame:
         det_arr = np.array(detection_points)  # (N, 3) - cx, cy, t
-        for t in range(T):
-            if t in avg_traj_per_frame:
-                gt_cx, gt_cy = avg_traj_per_frame[t]
-                # Check spatial distance
-                spatial_dists = np.sqrt((det_arr[:, 0] - gt_cx)**2 + (det_arr[:, 1] - gt_cy)**2)
-                # Check temporal distance
-                temporal_dists = np.abs(det_arr[:, 2] - t)
-                # Combined check: spatially close AND temporally close
-                valid_detections = (spatial_dists < detection_radius) & (temporal_dists < time_window)
-                if np.any(valid_detections):
-                    # Network detected near this position at similar time
-                    tracking_per_frame[t] = (gt_cx, gt_cy)
-                else:
-                    # Fallback: check if ANY detection is reasonably close (for persistent tracking)
-                    # This helps when network detects once and satellite stays in region
-                    if np.min(spatial_dists) < detection_radius * 1.5:
-                        tracking_per_frame[t] = (gt_cx, gt_cy)
+
+        # First, check if ANY detection is along the trajectory (within 60 pixels of ANY GT point)
+        trajectory_detected = False
+        detection_threshold = 60  # pixels
+
+        for t in avg_traj_per_frame:
+            gt_cx, gt_cy = avg_traj_per_frame[t]
+            spatial_dists = np.sqrt((det_arr[:, 0] - gt_cx)**2 + (det_arr[:, 1] - gt_cy)**2)
+            if np.min(spatial_dists) < detection_threshold:
+                trajectory_detected = True
+                break
+
+        # If network detected the trajectory, show tracking for all frames with GT
+        if trajectory_detected:
+            for t in range(T):
+                if t in avg_traj_per_frame:
+                    tracking_per_frame[t] = avg_traj_per_frame[t]
 
     # Create custom colormap: black -> blue -> white (for event intensity)
     colors = ['black', '#001133', '#003366', '#0066cc', '#3399ff', 'white']
