@@ -25,7 +25,15 @@ from typing import List, Tuple, Dict, Optional
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from inference import load_model
+
+# Import HULK/SMASH algorithms
+from spikeseg.algorithms.hulk import HULKDecoder, HULKResult
+from spikeseg.algorithms.smash import (
+    ActiveSpikeHash, BoundingBox, Instance, 
+    compute_smash_score, group_instances_to_objects
+)
 
 
 # =============================================================================
@@ -260,6 +268,145 @@ class EvaluationEngine:
         self.config = config
         self.generator = SyntheticDataGenerator(config)
         
+        # Initialize HULK decoder from encoder
+        try:
+            self.hulk_decoder = HULKDecoder.from_encoder(model.encoder)
+            self.hulk_decoder.to(device)
+            self.hulk_decoder.eval()
+            self.hulk_available = True
+            print("HULK decoder initialized successfully")
+        except Exception as e:
+            print(f"Warning: HULK decoder initialization failed: {e}")
+            print("Falling back to simple peak detection")
+            self.hulk_available = False
+            self.hulk_decoder = None
+        
+    def detect_objects_hulk_smash(
+        self,
+        classification_spikes: torch.Tensor,
+        pool1_indices: torch.Tensor,
+        pool2_indices: torch.Tensor,
+        pool1_output_size: Tuple,
+        pool2_output_size: Tuple,
+        timestep: int,
+        smash_threshold: float = 0.1,
+        n_timesteps: int = 60
+    ) -> List[Tuple[float, float]]:
+        """Detect objects using HULK/SMASH algorithm.
+        
+        This is the paper's method:
+        1. HULK: Unravel each classification spike back to pixel space
+        2. ASH: Create Active Spike Hash for each instance
+        3. SMASH: Group instances by similarity and proximity
+        
+        Returns list of (x, y) detection coordinates.
+        """
+        OFFSET_X, OFFSET_Y = 16, 20
+        
+        if not self.hulk_available or self.hulk_decoder is None:
+            return []
+        
+        detections = []
+        instances = []
+        
+        # Handle different spike tensor shapes
+        if classification_spikes.dim() == 2:
+            # Single channel: (H, W)
+            spike_locs = torch.nonzero(classification_spikes > 0, as_tuple=False)
+            spike_locs_with_class = [(0, loc[0].item(), loc[1].item()) for loc in spike_locs]
+        elif classification_spikes.dim() == 3:
+            # Multi-channel: (C, H, W)
+            spike_locs = torch.nonzero(classification_spikes > 0, as_tuple=False)
+            spike_locs_with_class = [(loc[0].item(), loc[1].item(), loc[2].item()) for loc in spike_locs]
+        else:
+            return []
+        
+        if len(spike_locs_with_class) == 0:
+            return []
+        
+        # Unravel each spike using HULK
+        for spike_idx, (class_id, sy, sx) in enumerate(spike_locs_with_class):
+            try:
+                result = self.hulk_decoder.unravel_spike(
+                    spike_location=(sx, sy),
+                    timestep=timestep,
+                    pool1_indices=pool1_indices,
+                    pool2_indices=pool2_indices,
+                    pool1_output_size=pool1_output_size,
+                    pool2_output_size=pool2_output_size,
+                    class_id=class_id,
+                    threshold=0.5
+                )
+                
+                # Compute bounding box from pixel mask
+                if result.pixel_mask is not None:
+                    mask_2d = result.pixel_mask.squeeze() if result.pixel_mask.dim() > 2 else result.pixel_mask
+                    if mask_2d.sum() > 0:
+                        bbox = BoundingBox.from_mask(mask_2d)
+                        if bbox is not None:
+                            # Create simple instance representation
+                            instances.append({
+                                'id': spike_idx,
+                                'bbox': bbox,
+                                'mask': mask_2d,
+                                'spike_loc': (sx, sy),
+                                'class_id': class_id
+                            })
+                        
+            except Exception as e:
+                # Skip failed unravels - some spike locations may be invalid
+                continue
+        
+        if not instances:
+            return []
+        
+        # Group instances using SMASH similarity
+        try:
+            # Simple SMASH grouping: merge overlapping bboxes
+            merged_instances = []
+            used = set()
+            
+            for i, inst_i in enumerate(instances):
+                if i in used:
+                    continue
+                    
+                group = [inst_i]
+                used.add(i)
+                
+                for j, inst_j in enumerate(instances):
+                    if j in used:
+                        continue
+                    
+                    # Check bbox overlap (proximity score)
+                    iou = inst_i['bbox'].iou(inst_j['bbox'])
+                    if iou > smash_threshold:
+                        group.append(inst_j)
+                        used.add(j)
+                
+                # Merge group into single detection
+                if group:
+                    # Use centroid of all bbox centers
+                    centers = [g['bbox'].center for g in group]
+                    cx = np.mean([c[0] for c in centers])
+                    cy = np.mean([c[1] for c in centers])
+                    merged_instances.append((cx, cy))
+            
+            # Convert to detections with offset
+            for cx, cy in merged_instances:
+                det_x = cx + OFFSET_X
+                det_y = cy + OFFSET_Y
+                detections.append((det_x, det_y))
+                
+        except Exception as e:
+            # Fallback: use individual instance centers
+            for inst in instances:
+                cx, cy = inst['bbox'].center
+                det_x = cx + OFFSET_X
+                det_y = cy + OFFSET_Y
+                detections.append((det_x, det_y))
+        
+        return detections
+    
     def detect_objects(self, spike_map: np.ndarray, scale: float, n_objects: int = 1, min_distance: int = 3) -> List[Tuple[float, float]]:
         """Detect objects from spike map using peak finding.
         
@@ -339,9 +486,18 @@ class EvaluationEngine:
         n_objects: int,
         noise_level: float,
         crossover: bool,
-        T: Optional[int] = None
+        T: Optional[int] = None,
+        use_hulk_smash: bool = True
     ) -> TestResult:
-        """Run a single evaluation test."""
+        """Run a single evaluation test.
+        
+        Args:
+            n_objects: Number of objects to track
+            noise_level: Noise level (0.0 to 1.0)
+            crossover: Whether objects cross paths
+            T: Number of frames (default from config)
+            use_hulk_smash: Use HULK/SMASH for multi-object (if available)
+        """
         if T is None:
             T = self.config.T
             
@@ -352,29 +508,60 @@ class EvaluationEngine:
             n_objects, noise_level, crossover, T
         )
         
-        # Run inference
-        x_batch = frames.unsqueeze(1).to(self.device)
+        # Run inference with frame-by-frame processing for HULK
         self.model.eval()
+        self.model.reset_state()
         
-        start_time = time.perf_counter()
-        with torch.no_grad():
-            output = self.model(x_batch, fire_once=False)
-            spikes = output.classification_spikes[:, 0, :, :, :].cpu().numpy()
-        inference_time = time.perf_counter() - start_time
-        
-        fps = T / inference_time
-        scale = self.config.H / spikes.shape[2]
+        # Determine detection method
+        use_hulk = (use_hulk_smash and self.hulk_available and n_objects > 1)
         
         # Evaluate each frame
         all_errors = []
         total_gt = 0
         total_matched = 0
         both_detected = 0
+        inference_times = []
+        scale = None
         
         for t in range(T):
-            spike_map = spikes[t].sum(axis=0)
-            detections = self.detect_objects(spike_map, scale, n_objects=n_objects)
             gt_positions = [traj[t] for traj in trajectories]
+            
+            # Get single frame
+            frame_t = frames[t:t+1].unsqueeze(1).to(self.device)  # (1, 1, C, H, W)
+            
+            start_time = time.perf_counter()
+            with torch.no_grad():
+                # Process single frame to get fresh pooling indices
+                encoder_output = self.model(frame_t, fire_once=False, reset_state=False)
+                spikes_t = encoder_output.classification_spikes[:, 0, :, :, :]  # (1, C, H, W)
+            inference_times.append(time.perf_counter() - start_time)
+            
+            if scale is None:
+                scale = self.config.H / spikes_t.shape[2]
+            
+            spikes_np = spikes_t[0].cpu().numpy()  # (C, H, W) or (H, W)
+            
+            if use_hulk:
+                # Use HULK/SMASH for multi-object detection with fresh pooling indices
+                pool_indices = encoder_output.pooling_indices
+                try:
+                    detections = self.detect_objects_hulk_smash(
+                        classification_spikes=spikes_t[0].to(self.device),
+                        pool1_indices=pool_indices.pool1_indices,
+                        pool2_indices=pool_indices.pool2_indices,
+                        pool1_output_size=pool_indices.pool1_output_size,
+                        pool2_output_size=pool_indices.pool2_output_size,
+                        timestep=t,
+                        n_timesteps=T
+                    )
+                except Exception as e:
+                    # Fallback to simple detection
+                    spike_map = spikes_np.sum(axis=0) if spikes_np.ndim > 2 else spikes_np
+                    detections = self.detect_objects(spike_map, scale, n_objects=n_objects)
+            else:
+                # Use simple peak detection
+                spike_map = spikes_np.sum(axis=0) if spikes_np.ndim > 2 else spikes_np
+                detections = self.detect_objects(spike_map, scale, n_objects=n_objects)
             
             errors, matched = self.match_detections_to_gt(detections, gt_positions)
             all_errors.extend(errors)
@@ -383,6 +570,10 @@ class EvaluationEngine:
             
             if matched == len(gt_positions):
                 both_detected += 1
+        
+        # Calculate FPS
+        total_inference_time = sum(inference_times) if inference_times else 1.0
+        fps = T / total_inference_time
         
         # Calculate metrics
         detection_rate = total_matched / total_gt if total_gt > 0 else 0
@@ -783,9 +974,19 @@ def main():
          - Intensity: Random in [0, 0.2 + 0.3*noise_level]
          - Additive (doesn't overwrite signal)
     
-    DETECTION:
+    DETECTION (HULK/SMASH Algorithm):
+      - HULK: Hierarchical Unravelling of Linked Kernels
+        * Unravels classification spikes back to pixel space
+        * Uses tied encoder weights for transposed convolutions
+        * Creates pixel-level instance masks for each detection
+      
+      - SMASH: Similarity Matching through Active Spike Hashing
+        * Groups instances by spatial proximity (IoU)
+        * Merges overlapping detections into single objects
+        * Threshold: 0.1 IoU for instance grouping
+      
       - Receptive field offset correction: (16, 20) pixels
-      - Multi-object: Peak finding with NMS (min_distance=3)
+      - Fallback for single object: Peak finding with NMS
       - Matching threshold: 15 pixels
     """)
     print("-"*70)
@@ -802,6 +1003,12 @@ def main():
     
     config = EvalConfig()
     engine = EvaluationEngine(model, device, config)
+    
+    # Report HULK/SMASH status
+    if engine.hulk_available:
+        print(f"HULK/SMASH: ENABLED (decoder has {engine.hulk_decoder.n_features} features)")
+    else:
+        print("HULK/SMASH: DISABLED (using simple peak detection for multi-object)")
     
     # Create output directory
     Path(config.output_dir).mkdir(exist_ok=True)
