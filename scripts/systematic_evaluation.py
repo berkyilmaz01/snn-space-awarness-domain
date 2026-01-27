@@ -71,11 +71,6 @@ class SyntheticDataGenerator:
         self.C = config.C
         self.T = config.T
         
-        # Hot pixels: ~0.05% of pixels (about 8 on 128x128)
-        self.hot_pixel_rate = 0.0005
-        self.hot_pixels = torch.rand(self.H, self.W) < self.hot_pixel_rate
-        # Hot pixel intensity: ~0.15 (150/1000 scale, much weaker than signal)
-        self.hot_pixel_intensity = 0.15
         
     def generate_trajectory(
         self, 
@@ -196,13 +191,8 @@ class SyntheticDataGenerator:
                         frame[0, py, px] = max(frame[0, py, px].item(), intensity * 0.5)  # Was 0.3
                         frame[1, py, px] = max(frame[1, py, px].item(), intensity * 1.0)  # Already max
         
-        # Add noise
+        # Add noise (simple additive - this version worked before)
         if noise_level > 0:
-            # 1. Hot pixels (weak, ~8 pixels total)
-            frame[0] = torch.clamp(frame[0] + self.hot_pixels.float() * self.hot_pixel_intensity * 0.3, 0, 1)
-            frame[1] = torch.clamp(frame[1] + self.hot_pixels.float() * self.hot_pixel_intensity * 0.5, 0, 1)
-            
-            # 2. Random background noise
             noise_mask = torch.rand(self.H, self.W) < noise_level
             noise_intensity = torch.rand(self.H, self.W) * (0.2 + 0.3 * noise_level)
             
